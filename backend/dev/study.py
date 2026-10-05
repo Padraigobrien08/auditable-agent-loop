@@ -22,6 +22,10 @@ Usage::
     # the rule-based baseline (size 0: the scaffold with no model), full and fully ablated
     python -m backend.dev.study run --out ... --model fixture --condition A --condition B
 
+    # the signal-strength curve for the same models and conditions (36 runs each, unscored)
+    python -m backend.dev.study run --out ... --model qwen3:8b=8 --condition A --condition C \
+        --tier core --trials 1 --sweep
+
     python -m backend.dev.study report data/evaluation/agency/study
 
 Conditions: ``A`` is the full loop; ``B`` the loop with critic, typed termination and the
@@ -39,9 +43,11 @@ from typing import Any
 from agentic.agent.ablations import LoopAblations
 from agentic.evaluation.agency import AgencyReport
 from agentic.evaluation.cases import CaseTier
+from agentic.evaluation.runner import SweepPoint, run_signal_sweep
 from agentic.evaluation.scoreboard import RunMetrics
-from agentic.evaluation.study import Observation, analyse, observations
+from agentic.evaluation.study import Observation, SweepCurve, analyse, observations, sweep_curve
 from backend.agents.agentic_model_policy import AGENTIC_PROMPT_VERSION
+from backend.config.settings import get_settings
 from backend.dev.agency_bench import (
     BARE,
     FIXTURE,
@@ -49,11 +55,14 @@ from backend.dev.agency_bench import (
     MODEL,
     BareFactory,
     PolicyFactory,
+    _assert_priced,
+    _budget,
     _default_bare_factory,
     _default_policy_factory,
+    _safety,
     run_policy_rows,
 )
-from backend.dev.bare_model import BARE_PROMPT_VERSION
+from backend.dev.bare_model import BARE_PROMPT_VERSION, run_bare_sweep
 
 CONDITIONS: tuple[str, ...] = (
     "A", "B", *(f"B-{name}" for name in LoopAblations.model_fields), "C",
@@ -136,6 +145,67 @@ def run_cell(
     return path
 
 
+def sweep_path(out: Path, model: str, condition: str) -> Path:
+    return out / "sweeps" / f"{_slug(model)}__{_slug(condition)}.json"
+
+
+def run_sweep(
+    out: Path, *, model: str, size_b: float | None, condition: str,
+    max_elapsed_seconds: float | None = None, allow_unpriced: bool = False,
+    policy_factory: PolicyFactory = _default_policy_factory,
+    bare_factory: BareFactory = _default_bare_factory, settings: Any = None,
+) -> Path | None:
+    """
+    Run the unscored signal sweep for one model × condition and persist it. ``None`` if it exists.
+
+    The same refusals as a cell: a model row with no provider, an unpriced model, and a sweep in
+    which the provider never answered are stopped rather than written, so a curve on disk is
+    always a curve of the model it is named after.
+    """
+    path = sweep_path(out, model, condition)
+    if path.exists():
+        return None
+    bench_condition, ablations = condition_settings(condition)
+    if bench_condition == BARE and model == FIXTURE:
+        raise SystemExit("condition C is a model with no loop; the rule-based policy has no bare form")
+    base = settings if settings is not None else get_settings()
+    kind = FIXTURE if model == FIXTURE else MODEL
+    row_settings = base if kind == FIXTURE else base.model_copy(update={"agent_completion_model": model})
+    if kind == MODEL and not allow_unpriced:
+        _assert_priced(row_settings, model, model)
+
+    points: list[SweepPoint]
+    if bench_condition == BARE:
+        responder, _drain = bare_factory(row_settings)
+        points = run_bare_sweep(responder)
+    else:
+        policy = policy_factory(kind, row_settings)
+        if kind == MODEL and type(policy).__name__ == "FixtureAgentPolicy":
+            raise SystemExit(f"sweep for {model!r} requested but no LLM provider is configured")
+        points = run_signal_sweep(policy=policy, ablations=ablations,
+                                  budget=_budget(None, max_elapsed_seconds), safety=_safety(max_elapsed_seconds))
+
+    if kind == MODEL and points and all((p.policy_failure or "").endswith(":transport") for p in points):
+        raise SystemExit(f"every sweep point for {model!r} failed because the provider never answered")
+
+    payload = {"model": model, "size_b": size_b, "condition": condition,
+               "points": [p.model_dump(mode="json") for p in points]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def load_sweeps(out: Path) -> list[SweepCurve]:
+    curves = []
+    for path in sorted((out / "sweeps").glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        points = [SweepPoint.model_validate(p) for p in data["points"]]
+        curves.append(sweep_curve(points, model=data["model"], size_b=data["size_b"], condition=data["condition"]))
+    return curves
+
+
 def load_observations(out: Path) -> list[Observation]:
     obs: list[Observation] = []
     for path in sorted((out / "cells").glob("*.json")):
@@ -148,7 +218,7 @@ def load_observations(out: Path) -> list[Observation]:
 
 
 def write_report(out: Path) -> str:
-    report = analyse(load_observations(out))
+    report = analyse(load_observations(out), load_sweeps(out))
     markdown = report.to_markdown()
     (out / "study.md").write_text(markdown + "\n", encoding="utf-8")
     (out / "study.json").write_text(report.model_dump_json(indent=1) + "\n", encoding="utf-8")
@@ -169,6 +239,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     run.add_argument("--max-elapsed-seconds", type=float, default=None)
     run.add_argument("--max-cost-usd", type=float, default=None)
     run.add_argument("--allow-unpriced", action="store_true")
+    run.add_argument("--sweep", action="store_true",
+                     help="Also run the unscored signal sweep (36 runs) per model × condition.")
 
     rep = sub.add_parser("report", help="Analyse the persisted cells.")
     rep.add_argument("out", type=Path)
@@ -193,6 +265,12 @@ def main(argv: list[str] | None = None) -> int:
                 max_cost_usd=args.max_cost_usd, allow_unpriced=args.allow_unpriced,
             )
             print(f"{model} {condition}: {'written ' + str(written) if written else 'already done, skipped'}")
+            if args.sweep:
+                swept = run_sweep(
+                    args.out, model=model, size_b=size_b, condition=condition,
+                    max_elapsed_seconds=args.max_elapsed_seconds, allow_unpriced=args.allow_unpriced,
+                )
+                print(f"{model} {condition} sweep: {'written ' + str(swept) if swept else 'already done, skipped'}")
     print(write_report(args.out))
     return 0
 

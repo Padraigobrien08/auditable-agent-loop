@@ -46,6 +46,7 @@ from agentic.evaluation.agency import (
     answer_is_scorable,
 )
 from agentic.evaluation.cases import AGENCY_CASES, SUPPORTED, AgencyCase
+from agentic.evaluation.runner import SweepPoint
 
 #: Policy failures that mean the model did not produce a usable decision. ``ungrounded`` is
 #: included: a candidate index that does not exist is as much a failure to answer as bad JSON.
@@ -260,12 +261,75 @@ def paired(a: Sequence[Observation], b: Sequence[Observation]) -> PairedDifferen
                             diff=diff, ci_low=low, ci_high=high, n_cases=len(shared))
 
 
+# -- the signal-strength curve --------------------------------------------------------------------
+
+
+class SweepLevel(DomainModel):
+    """One target signal level: how often a trend was claimed, at the realised strength."""
+
+    target_t: float
+    #: Mean realised t over the level's points. The curve is read against this, not the target.
+    mean_realised_t: float
+    claim_rate: float
+    n: int
+
+
+class SweepCurve(DomainModel):
+    """
+    Where a configuration starts claiming a trend, from no signal to unambiguous.
+
+    Unscored on purpose: between clear and null the right answer depends on the evidence
+    standard, so a curve is compared with other curves (the full loop's, the rule-based
+    policy's), not with an answer key. ``claim_rate`` at target 0 is the rate of claims made
+    about pure noise.
+    """
+
+    model: str
+    size_b: float | None = None
+    condition: str
+    levels: list[SweepLevel] = Field(default_factory=list)
+    #: Realised t at which the claim rate first reaches 50%, interpolated between levels.
+    #: ``None`` when it never crosses inside the sweep; ``t50_note`` then says which way.
+    t50: float | None = None
+    t50_note: str = ""
+    #: Points whose call failed (transport or structural). A failure is not a judgement about
+    #: the data, so it is left out of the curve rather than counted as "did not claim".
+    excluded: int = 0
+
+
+def sweep_curve(points: Sequence[SweepPoint], *, model: str, size_b: float | None, condition: str) -> SweepCurve:
+    decided = [p for p in points if p.policy_failure is None]
+    by_target: dict[float, list[SweepPoint]] = {}
+    for p in decided:
+        by_target.setdefault(p.target_t, []).append(p)
+    levels = [
+        SweepLevel(target_t=t, mean_realised_t=round(float(np.mean([p.realised_t for p in pts])), 3),
+                   claim_rate=round(float(np.mean([p.claimed for p in pts])), 4), n=len(pts))
+        for t, pts in sorted(by_target.items())
+    ]
+    t50, note = None, ""
+    crossing = next((i for i, lv in enumerate(levels) if lv.claim_rate >= 0.5), None)
+    if not levels:
+        note = "no decided points"
+    elif crossing is None:
+        note = "never claims"
+    elif crossing == 0:
+        note = "claims at every level"
+    else:
+        lo, hi = levels[crossing - 1], levels[crossing]
+        frac = (0.5 - lo.claim_rate) / (hi.claim_rate - lo.claim_rate)
+        t50 = round(lo.mean_realised_t + frac * (hi.mean_realised_t - lo.mean_realised_t), 3)
+    return SweepCurve(model=model, size_b=size_b, condition=condition, levels=levels,
+                      t50=t50, t50_note=note, excluded=len(points) - len(decided))
+
+
 # -- the report ---------------------------------------------------------------------------------
 
 
 class StudyReport(DomainModel):
     cells: list[Cell] = Field(default_factory=list)
     comparisons: list[PairedDifference] = Field(default_factory=list)
+    sweeps: list[SweepCurve] = Field(default_factory=list)
 
     def to_markdown(self) -> str:
         lines = [
@@ -302,6 +366,26 @@ class StudyReport(DomainModel):
                 lines.append(
                     f"| {d.model} | {d.tier} | {d.a} − {d.b} | {f'**{diff}**' if d.excludes_zero else diff} | "
                     f"{d.ci_low:+.0%} to {d.ci_high:+.0%} | {d.n_cases} |")
+        if self.sweeps:
+            targets = sorted({lv.target_t for c in self.sweeps for lv in c.levels})
+            lines += [
+                "",
+                "## Signal-strength curve",
+                "",
+                "Share of runs claiming a trend at each target signal level (slope t-statistic; "
+                "the realised value scatters around it). Unscored: compare curves with each "
+                "other, not with an answer key. `t50` is the realised t where the claim rate "
+                "first reaches 50%; the `0` column is claims made about pure noise.",
+                "",
+                "| model | size (B) | condition | t50 | " + " | ".join(f"{t:g}" for t in targets) + " | excluded |",
+                "|---|---|---|---|" + "---|" * len(targets) + "---|",
+            ]
+            for c in sorted(self.sweeps, key=lambda c: (c.size_b is None, c.size_b or 0, c.model, c.condition)):
+                rates = {lv.target_t: lv.claim_rate for lv in c.levels}
+                size = "—" if c.size_b is None else f"{c.size_b:g}"
+                t50 = f"{c.t50:.2f}" if c.t50 is not None else c.t50_note
+                cells = " | ".join(f"{rates[t]:.0%}" if t in rates else "—" for t in targets)
+                lines.append(f"| {c.model} | {size} | {c.condition} | {t50} | {cells} | {c.excluded} |")
         return "\n".join(lines)
 
 
@@ -309,7 +393,7 @@ class StudyReport(DomainModel):
 REFERENCE_CONDITION = "A"
 
 
-def analyse(obs: Sequence[Observation]) -> StudyReport:
+def analyse(obs: Sequence[Observation], sweeps: Sequence[SweepCurve] = ()) -> StudyReport:
     """Every cell, and each condition compared with the full loop for the same model and tier."""
     groups: dict[tuple[str, str, str], list[Observation]] = {}
     for o in obs:
@@ -320,4 +404,4 @@ def analyse(obs: Sequence[Observation]) -> StudyReport:
         reference = groups.get((model, REFERENCE_CONDITION, tier))
         if condition != REFERENCE_CONDITION and reference:
             comparisons.append(paired(reference, group))
-    return StudyReport(cells=cells, comparisons=comparisons)
+    return StudyReport(cells=cells, comparisons=comparisons, sweeps=list(sweeps))

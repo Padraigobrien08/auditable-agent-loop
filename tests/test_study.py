@@ -18,6 +18,7 @@ from agentic.agent.policy import GoalInterpretation
 from agentic.domain import PolicyDecisionKind, PolicyFailure, PolicyFailureKind
 from agentic.evaluation.agency import AgencyCaseResult, AgencyProperty, AgencyReport, PropertyOutcome
 from agentic.evaluation.cases import AGENCY_CASES, CaseTier
+from agentic.evaluation.runner import SweepPoint
 from agentic.evaluation.study import (
     FailureClass,
     Observation,
@@ -26,6 +27,7 @@ from agentic.evaluation.study import (
     classify,
     observations,
     paired,
+    sweep_curve,
 )
 from backend.config.settings import Settings
 from backend.dev.study import CONDITIONS, cell_path, condition_settings, load_observations, run_cell, write_report
@@ -210,3 +212,77 @@ def test_a_model_that_never_answers_scores_zero_honestly(tmp_path) -> None:  # n
     assert set(summary.failures) == {"structural"}
     assert "Honest pass rate" in write_report(tmp_path)
     assert (tmp_path / "study.json").exists()
+
+
+# -- the signal-strength curve -----------------------------------------------------------------------
+
+def _points(rates: dict[float, list[bool]], *, failed: int = 0) -> list[SweepPoint]:
+    points = [SweepPoint(case_id=f"t{t}-{i}", target_t=t, realised_t=t, claimed=c)
+              for t, claims in rates.items() for i, c in enumerate(claims)]
+    points += [SweepPoint(case_id=f"f{i}", target_t=0.0, realised_t=0.0, claimed=False,
+                          policy_failure="bare_answer:invalid_json") for i in range(failed)]
+    return points
+
+
+def test_t50_is_interpolated_where_the_claim_rate_crosses_half() -> None:
+    curve = sweep_curve(_points({0.0: [False, False], 2.0: [False, False], 4.0: [True, True]}),
+                        model="m", size_b=1, condition="A")
+
+    assert curve.t50 == pytest.approx(3.0)
+    assert [lv.claim_rate for lv in curve.levels] == [0.0, 0.0, 1.0]
+
+
+@pytest.mark.parametrize(("claims", "note"), [(True, "claims at every level"), (False, "never claims")])
+def test_a_curve_that_never_crosses_says_which_way(claims: bool, note: str) -> None:
+    curve = sweep_curve(_points({0.0: [claims], 4.0: [claims]}), model="m", size_b=1, condition="A")
+
+    assert curve.t50 is None
+    assert curve.t50_note == note
+
+
+def test_failed_calls_are_left_out_of_the_curve_not_counted_as_declining() -> None:
+    curve = sweep_curve(_points({0.0: [True]}, failed=3), model="m", size_b=1, condition="C")
+
+    assert curve.excluded == 3
+    assert curve.levels[0].claim_rate == 1.0
+
+
+def test_a_sweep_is_persisted_once_and_reported(tmp_path) -> None:  # noqa: ANN001 - pytest fixture
+    from backend.dev.study import load_sweeps, run_sweep, sweep_path
+
+    written = run_sweep(tmp_path, model="fixture", size_b=0.0, condition="A")
+    assert written == sweep_path(tmp_path, "fixture", "A")
+    assert run_sweep(tmp_path, model="fixture", size_b=0.0, condition="A") is None
+
+    [curve] = load_sweeps(tmp_path)
+    assert curve.levels[-1].claim_rate == 1.0, "an unmistakable trend must be claimed"
+    assert "Signal-strength curve" in write_report(tmp_path)
+
+
+def test_a_bare_sweep_produces_the_same_points(tmp_path) -> None:  # noqa: ANN001
+    from backend.dev.study import load_sweeps, run_sweep
+
+    answer = json.dumps({"disposition": "supported", "confidence": 0.9,
+                         "claims": [{"statement": "value is increasing over time", "status": "supported"}]})
+    free = Settings(agent_completion_model="m", llm_model_prices={"m": {"input_per_1m": 0, "output_per_1m": 0}})
+    run_sweep(tmp_path, model="m", size_b=1.0, condition="C", settings=free,
+              bare_factory=lambda s: (lambda _s, _u: answer, lambda: 0.0))
+
+    [curve] = load_sweeps(tmp_path)
+    assert curve.condition == "C"
+    assert curve.t50_note == "claims at every level"
+    assert sum(lv.n for lv in curve.levels) == 36
+
+
+def test_a_sweep_where_the_provider_never_answered_is_not_written(tmp_path) -> None:  # noqa: ANN001
+    from agentic.agent import PolicyTransportError
+    from backend.dev.study import run_sweep, sweep_path
+
+    def respond(_s: str, _u: str) -> str:
+        raise PolicyTransportError("provider error: 401")
+
+    free = Settings(agent_completion_model="m", llm_model_prices={"m": {"input_per_1m": 0, "output_per_1m": 0}})
+    with pytest.raises(SystemExit, match="never answered"):
+        run_sweep(tmp_path, model="m", size_b=1.0, condition="C", settings=free,
+                  bare_factory=lambda s: (respond, lambda: 0.0))
+    assert not sweep_path(tmp_path, "m", "C").exists()

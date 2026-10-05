@@ -326,8 +326,20 @@ python -m backend.dev.study report data/evaluation/agency/study
 - Output: `study.md` (tables) and `study.json` (the cells, with size, rate and CI: the
   headline figure's data).
 
-**Not yet:** the signal-sweep curve in the report (the data is available through
-`run_signal_sweep`), and the figure itself, which belongs with the write-up (S6).
+- **Signal-strength curve** (`run --sweep`). Runs the 36-point unscored sweep per model ×
+  condition (the loop via `run_signal_sweep`, C via `run_bare_sweep`). Sweeps are persisted
+  under `sweeps/` and resume like cells, with the same refusals. The report gives the claim
+  rate per target level and `t50`, the realised t where the claim rate first reaches 50%,
+  interpolated between levels. A curve that never crosses says so ("claims at every level" /
+  "never claims") rather than extrapolating. Failed calls are excluded, not counted as
+  declining. The `0` column is claims about pure noise.
+
+  Rule-based policy, measured. On this branch: noise claims **33%**, t50 **0.21**. With
+  #106's change-point fix merged: noise claims **0%**, t50 **2.12**, which sits just under the
+  ~2.23 a two-sided 5% slope test needs at n = 12. So the curve resolves the defect, and once
+  fixed, the scaffold's own evidence standard behaves like a textbook test.
+
+**Not yet:** the figure itself, which belongs with the write-up (S6).
 
 ### S6 — Write-up
 The extended scoreboard, the headline figure, a Substack post, and the README rebuilt around
