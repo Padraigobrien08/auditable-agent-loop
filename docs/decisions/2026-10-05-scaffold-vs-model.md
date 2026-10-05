@@ -95,6 +95,16 @@ These come from reading the loop. They change parts of the original sketch.
 6. **Trials at temperature 0 add little.** The policy sends `temperature=0.0`, and local models
    at temperature 0 are near-deterministic. Most of the variance is between cases, so the
    bootstrap resamples cases, and more cases beat more trials.
+7. **A broken model gets credit for hedging.** A stub that never returned valid JSON (every
+   run ended `interpret_goal:invalid_json`) still passed **36% of core** and 33% of
+   `right_disposition`. A failed run concludes as not established, and that is the right
+   answer on every case built to punish overclaiming. That is correct for a product: it
+   must never invent a conclusion. As a measurement, it would score a model that cannot
+   produce output as partly well-calibrated, which is exactly the confusion this study
+   exists to remove. The headline metric therefore counts a run with a non-`ungrounded`
+   policy failure as **failed**, whatever its disposition. The as-scored pass rate is
+   reported next to it, and transport failures are re-run rather than counted. Decided
+   in S5, but it must be fixed before any small-model number is read.
 
 ## 6. New cases
 
@@ -136,11 +146,31 @@ The policy records *which decision failed* (interpret, generate, select, critiqu
   doing it, it needs a per-decision record on the state, which means a column and a
   migration.
 
-### S1 — Local provider + pilot
+### S1 — Local provider + pilot · **config landed 2026-10-05, pilot not yet run**
 1. Point `openai_base_url` at Ollama's OpenAI-compatible endpoint.
 2. Add zero-price entries, so `_assert_priced` accepts the model honestly rather than being
    bypassed.
 3. Run the 19 cases, condition A, 1 trial, smallest and largest size only.
+
+Landed: `scripts/agency-pilot-local [model ...]` does steps 1 and 2 and runs step 3. It
+needs `ollama serve` running and the models pulled. Along the way:
+
+- An explicit zero price now means *free*. The "$0.00 spend means the price key missed"
+  guard used to abort every local row after its first trial.
+- `--max-elapsed-seconds` (the script uses 1800) raises the per-run wall-clock budget, and
+  the safety cap above it. At the default 120 s, a laptop-speed 8B would be scored
+  `budget_exhausted`, which measures the hardware. The experiment and model-call budgets,
+  which don't depend on hardware, are unchanged.
+- Output JSON records the endpoint host and the time budget. `models.json` pins each
+  model's digest.
+- Verified end to end against a stub server. Garbage replies are recorded as
+  `interpret_goal:invalid_json`, HTTP 500s as `interpret_goal:transport`, and missing
+  models or a stopped Ollama fail before any run starts.
+
+**Decide before the pilot: Qwen3's thinking mode.** Qwen3 thinks by default. That changes
+latency by an order of magnitude and may change what reaches `content` under
+`json_object`. Pick on or off, hold it fixed across sizes, and record it. Check the first
+raw reply by hand before trusting a row.
 
 The pilot answers two questions: do structural failures dominate, and does the largest size
 already saturate?

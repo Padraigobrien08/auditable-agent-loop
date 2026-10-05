@@ -101,6 +101,11 @@ class PolicyScorecard(DomainModel):
     #: Set when trials were cut short, e.g. by a suite-level cost ceiling. A truncated row
     #: is still reportable but must not be read as an N-trial result.
     truncated: bool = False
+    #: Runs a policy failure ended, keyed ``decision:kind`` (e.g. ``critique:schema``), summed
+    #: over trials. Beside the pass rate because a failing row means different things
+    #: depending on what is in here: a model that reasons badly, one that cannot produce valid
+    #: output, or a provider that never answered.
+    policy_failures: dict[str, int] = Field(default_factory=dict)
 
     @property
     def fully_stable(self) -> bool:
@@ -146,6 +151,14 @@ def aggregate_trials(
         for name, score in report.property_scores().items():
             property_totals.setdefault(name, []).append(score)
 
+    failures: dict[str, int] = {}
+    for report in reports:
+        for result in report.results:
+            failure = result.observed_policy_failure
+            if failure is not None:
+                key = f"{failure.decision.value}:{failure.kind.value}"
+                failures[key] = failures.get(key, 0) + 1
+
     latencies = [m.elapsed_seconds for m in metrics]
     total_cost = sum(m.cost_usd for m in metrics)
 
@@ -163,6 +176,7 @@ def aggregate_trials(
         mean_cost_usd=round(total_cost / len(reports), 6),
         p95_latency_seconds=round(_p95(latencies), 4),
         truncated=truncated,
+        policy_failures=dict(sorted(failures.items())),
     )
 
 
@@ -218,6 +232,15 @@ class Scoreboard(DomainModel):
                     f"- `{label}` / `{case.case_id}` — passed "
                     f"{case.passed_trials}/{case.total_trials} trials"
                 )
+
+        failing = [r for r in self.rows if r.policy_failures]
+        if failing:
+            lines.append("")
+            lines.append("**Policy failures**: runs a policy decision ended, as `decision:kind`:")
+            lines.append("")
+            for row in failing:
+                counts = ", ".join(f"`{k}` × {v}" for k, v in row.policy_failures.items())
+                lines.append(f"- `{row.label}` / {row.tier or 'all'}: {counts}")
 
         truncated = [r.label for r in self.rows if r.truncated]
         if truncated:

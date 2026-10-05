@@ -213,6 +213,18 @@ configured price — the first would publish a fixture result under a model's na
 would leave `--max-cost-usd` summing a quantity that is always zero. `--allow-unpriced` opts
 into a quality-only run.
 
+Each row also lists **policy failures**: runs that a policy decision ended, counted as
+`decision:kind` (for example `critique:schema` or `interpret_goal:transport`). A failing row
+means different things depending on what is listed: a model that reasons badly, one that
+cannot produce valid output, or a provider that never answered.
+
+**Local models.** `scripts/agency-pilot-local` runs model rows against Ollama's
+OpenAI-compatible endpoint. It prices each model at an explicit `0.0`, which the harness
+reads as "free" rather than "unpriced", and it records each model's digest beside the
+results, because a tag like `qwen3:4b` can be re-published. It also raises the
+per-investigation wall-clock budget with `--max-elapsed-seconds`. Without that, slow
+hardware would be scored as the model exhausting its budget.
+
 It lives in `backend/dev` because assembling a model-backed policy needs settings, a provider,
 and the prompt registry, none of which `agentic/` may import. `python -m agentic.evaluation`
 stays offline, free, and deterministic.
