@@ -38,6 +38,7 @@ import structlog
 
 from agentic.agent.budget import LoopBudget, SafetyLimits
 from agentic.agent.policy import AgentPolicy
+from agentic.domain import PolicyFailureKind
 from agentic.evaluation.agency import AgencyReport
 from agentic.evaluation.cases import SUITE_ID, CaseTier
 from agentic.evaluation.runner import run_agency_suite
@@ -94,6 +95,21 @@ def _assert_priced(settings: Settings, model: str | None, label: str) -> None:
         '{"input_per_1m": 0.15, "output_per_1m": 0.60}}\'\n'
         "Pass --allow-unpriced to measure quality only, accepting a meaningless cost column."
     )
+
+
+def _provider_never_answered(report: AgencyReport) -> str | None:
+    """
+    The first failure's detail when *every* run ended on a transport failure, else ``None``.
+
+    All of them, not some: one timeout among answered calls is a result to record, but a
+    provider that answered nothing is a config fault, and scoring it would publish a row
+    about the configuration under the model's name.
+    """
+    failures = [r.observed_policy_failure for r in report.results]
+    if not failures or any(f is None or f.kind is not PolicyFailureKind.transport for f in failures):
+        return None
+    first = failures[0]
+    return first.detail if first is not None else ""
 
 
 def _is_known_free(settings: Settings, model: str | None) -> bool:
@@ -184,7 +200,8 @@ def run_policy_rows(
             log.error("agency_bench.no_provider", label=label)
             raise SystemExit(
                 f"--policy model requested for {label!r} but no LLM provider is configured; "
-                "set EDGAR_BACKEND_OPENAI_API_KEY (or OPENAI_API_KEY) or drop the model row."
+                "set EDGAR_BACKEND_LLM_PROVIDER=openai and EDGAR_BACKEND_OPENAI_API_KEY, "
+                "or drop the model row."
             )
 
         if kind == MODEL and not allow_unpriced:
@@ -222,12 +239,26 @@ def run_policy_rows(
                     spent_usd=round(spent, 4),
                 )
 
+                # Checked before the price guard below, which reads $0.00 spend as a price-key
+                # mismatch. When the provider never answered, nothing was billed for a reason
+                # that has nothing to do with prices, and saying so sends the reader to the
+                # wrong config.
+                first_trial = tier is tiers[0] and trial == 0
+                unreachable = _provider_never_answered(reports[-1]) if kind == MODEL and first_trial else None
+                if unreachable is not None:
+                    log.error("agency_bench.provider_unreachable", label=label, detail=unreachable)
+                    raise SystemExit(
+                        f"every {label!r} run ended because the provider never answered "
+                        f"(first: {unreachable}).\n"
+                        "Check EDGAR_BACKEND_OPENAI_API_KEY, EDGAR_BACKEND_OPENAI_BASE_URL and "
+                        "that the model id exists for this provider."
+                    )
+
                 # The static check above prices the *configured* id, but the API bills against
                 # a resolved snapshot ("gpt-5.4-mini" -> "gpt-5.4-mini-2026-03-17") and the
                 # price lookup is an exact match. Only observed spend can catch that mismatch,
                 # so fail after one trial rather than completing a whole paid benchmark at $0.
                 calls = sum(m.model_calls for m in policy_metrics)
-                first_trial = tier is tiers[0] and trial == 0
                 if (kind == MODEL and not allow_unpriced and not free and first_trial
                         and calls > 0 and spent == 0.0):
                     log.error("agency_bench.unpriced_resolved_model", label=label, model_calls=calls)

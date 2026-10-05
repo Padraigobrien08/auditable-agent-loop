@@ -426,3 +426,27 @@ def test_endpoint_records_host_only(base_url: str | None, expected: str) -> None
     from backend.dev.agency_bench import _endpoint
 
     assert _endpoint(Settings(openai_base_url=base_url)) == expected
+
+
+class _UnreachablePolicy(FixtureAgentPolicy):
+    def interpret_goal(self, goal_text: str, *, capability_summary: dict) -> GoalInterpretation:
+        from agentic.agent.policy import PolicyTransportError
+
+        raise PolicyTransportError("provider error: 401 invalid api key")
+
+
+def test_a_provider_that_never_answers_is_reported_as_such() -> None:
+    """
+    No completion means no spend, which the price guard would read as a price-key mismatch
+    and send the reader to the wrong config. A bad key must be named as what it is.
+    """
+    priced = Settings(
+        agent_completion_model="test-model",
+        llm_model_prices={"priced-model": {"input_per_1m": 0.15, "output_per_1m": 0.60}},
+    )
+
+    with pytest.raises(SystemExit, match="provider never answered.*401 invalid api key"):
+        run_policy_rows(
+            ["model"], model="priced-model", trials=3, settings=priced,
+            policy_factory=lambda kind, s: _UnreachablePolicy(),
+        )

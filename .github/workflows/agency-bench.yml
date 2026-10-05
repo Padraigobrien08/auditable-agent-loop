@@ -51,7 +51,18 @@ jobs:
       - name: Run the agency benchmark
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # The provider defaults to `off`, and with it off the harness refuses the model row
+          # rather than report a fixture result under the model's name. The key alone does
+          # not turn it on.
+          EDGAR_BACKEND_LLM_PROVIDER: openai
           EDGAR_BACKEND_OPENAI_API_KEY: ${{ secrets.EDGAR_BACKEND_OPENAI_API_KEY }}
+          # Settings validation runs before any work and requires the server's auth config.
+          # No server runs here and nothing signs or checks a token, so these are throwaway
+          # values, not secrets. tests/test_agency_bench_workflow.py fails if this step's
+          # env stops being enough to start the bench.
+          EDGAR_BACKEND_JWT_SECRET: agency-bench-unused-jwt-secret-0123456789
+          EDGAR_BACKEND_ALLOW_OPEN_REGISTRATION: "true"
+          EDGAR_BACKEND_OPS_API_TOKEN: agency-bench-unused
           # Prices are configuration, not a hardcoded table — an unpriced model reports
           # $0.00, which would leave --max-cost-usd summing a quantity that is always zero.
           # The harness refuses the row rather than run unprotected.
