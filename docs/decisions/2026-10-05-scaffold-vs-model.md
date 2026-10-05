@@ -341,10 +341,33 @@ python -m backend.dev.study report data/evaluation/agency/study
 
 **Not yet:** the figure itself, which belongs with the write-up (S6).
 
-### S6 — Write-up
+### S6 — Write-up · **figures and draft landed 2026-10-05; results pending the pilot**
 The extended scoreboard, the headline figure, a Substack post, and the README rebuilt around
 the result. The target claim has the form: *"the scaffold lifts a 4B model from X% to Y%
-disposition accuracy, within Z of frontier."*
+honest pass rate, within Z of frontier."* (Honest pass, not disposition accuracy: §5.7.)
+
+- **Figures** (`backend/dev/study_figures.py`). `study report` writes
+  `figures/headline.svg` and `figures/sweep.svg` from the persisted study alone. They're
+  self-contained SVG, pure Python with no plotting dependency.
+  - Headline: honest pass rate against size (log scale), one panel per tier, one line per
+    condition with its 95% interval as a 10% wash. The rule-based policy sits in a "no
+    model" slot left of the axis, and a reference model is a labelled hairline.
+  - Sweep: claim rate against realised t, one panel per model.
+  - Colours are the dataviz reference palette's first three slots, which pass every pairing
+    in both modes. Each condition has a fixed slot, so a missing condition never repaints
+    the rest.
+  - Every line is direct-labelled and `study.md` is the table view. That's required here
+    because slot 3 (aqua) is below 3:1 contrast on the light background.
+  - Light and dark layouts were checked by rendering synthetic preview data in Chromium.
+    That data was never committed.
+- **Draft** (`docs/writeup/2026-10-scaffold-vs-model.md`). The question, scoring and
+  limits are written. "Found along the way" covers the six findings made while building
+  the measurement, every figure traceable to a run. **Results are empty slots, each naming
+  the `study.md` table or figure that fills it.** Nothing there is to be written from
+  estimates.
+- **README not yet rebuilt.** It should lead with the result, and there is no result yet.
+  It waits for the pilot.
+
 
 ## 9. Risks
 

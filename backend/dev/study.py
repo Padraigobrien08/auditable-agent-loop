@@ -63,6 +63,7 @@ from backend.dev.agency_bench import (
     run_policy_rows,
 )
 from backend.dev.bare_model import BARE_PROMPT_VERSION, run_bare_sweep
+from backend.dev.study_figures import headline_svg, sweep_svg
 
 CONDITIONS: tuple[str, ...] = (
     "A", "B", *(f"B-{name}" for name in LoopAblations.model_fields), "C",
@@ -222,6 +223,12 @@ def write_report(out: Path) -> str:
     markdown = report.to_markdown()
     (out / "study.md").write_text(markdown + "\n", encoding="utf-8")
     (out / "study.json").write_text(report.model_dump_json(indent=1) + "\n", encoding="utf-8")
+    figures = out / "figures"
+    figures.mkdir(exist_ok=True)
+    if report.cells:
+        (figures / "headline.svg").write_text(headline_svg(report), encoding="utf-8")
+    if report.sweeps:
+        (figures / "sweep.svg").write_text(sweep_svg(report.sweeps), encoding="utf-8")
     return markdown
 
 
