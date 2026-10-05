@@ -284,6 +284,116 @@ def _check(
         outcomes.append(PropertyOutcome(property=prop, passed=passed, detail="" if passed else detail))
 
 
+# -- checks on the answer alone ------------------------------------------------------------
+#
+# These read only what a run concluded (disposition, claim statuses, confidence), never how it
+# got there. They are separate functions so a run with no investigation behind it (condition C
+# of docs/decisions/2026-10-05-scaffold-vs-model.md: one model call, no loop) is held to exactly
+# the same checks, not a copy of them that could drift.
+
+#: Properties a bare answer can be scored on. The rest describe the route (tools, critique,
+#: budget, termination) and only exist where there was a route.
+ANSWER_PROPERTIES: frozenset[AgencyProperty] = frozenset({
+    AgencyProperty.reaches_the_right_disposition,
+    AgencyProperty.revises_under_contradiction,
+    AgencyProperty.calibrated_confidence,
+})
+
+
+def _check_disposition(
+    expectations: AgencyExpectations, disposition: str | None, outcomes: list[PropertyOutcome],
+) -> None:
+    if expectations.disposition_in:
+        _check(
+            AgencyProperty.reaches_the_right_disposition,
+            disposition in expectations.disposition_in,
+            f"concluded {disposition!r}, expected one of {expectations.disposition_in}",
+            outcomes,
+        )
+
+
+def _check_statuses(
+    expectations: AgencyExpectations, statuses: list[str], outcomes: list[PropertyOutcome],
+) -> None:
+    if expectations.hypothesis_status_not_in:
+        offending = [s for s in statuses if s in expectations.hypothesis_status_not_in]
+        _check(
+            AgencyProperty.revises_under_contradiction,
+            not offending,
+            f"hypotheses ended {offending}, which the evidence does not support",
+            outcomes,
+        )
+
+    if expectations.hypothesis_status_any:
+        _check(
+            AgencyProperty.revises_under_contradiction,
+            any(s in expectations.hypothesis_status_any for s in statuses),
+            f"hypotheses ended {statuses}, expected any of {expectations.hypothesis_status_any}",
+            outcomes,
+        )
+
+
+def _check_max_confidence(
+    expectations: AgencyExpectations, confidence: float, outcomes: list[PropertyOutcome],
+) -> None:
+    if expectations.max_confidence is not None:
+        _check(
+            AgencyProperty.calibrated_confidence,
+            confidence <= expectations.max_confidence,
+            f"confidence {confidence:.2f} exceeds {expectations.max_confidence:.2f} for this evidence",
+            outcomes,
+        )
+
+
+def _check_rivals(
+    expectations: AgencyExpectations, statuses: list[str], outcomes: list[PropertyOutcome],
+) -> None:
+    if expectations.max_supported_claims is not None:
+        supported = statuses.count("supported")
+        _check(
+            AgencyProperty.revises_under_contradiction,
+            supported <= expectations.max_supported_claims,
+            f"{supported} claims ended supported; the goal asked which of rival explanations "
+            f"holds, so at most {expectations.max_supported_claims} may",
+            outcomes,
+        )
+
+
+def _check_min_confidence(
+    expectations: AgencyExpectations, confidence: float, outcomes: list[PropertyOutcome],
+) -> None:
+    if expectations.min_confidence is not None:
+        _check(
+            AgencyProperty.calibrated_confidence,
+            confidence >= expectations.min_confidence,
+            f"confidence {confidence:.2f} is below {expectations.min_confidence:.2f} "
+            "despite an unambiguous signal",
+            outcomes,
+        )
+
+
+def answer_is_scorable(expectations: AgencyExpectations) -> bool:
+    """Whether a case asserts anything about the answer, rather than only about the route."""
+    return bool(
+        expectations.disposition_in or expectations.hypothesis_status_not_in
+        or expectations.hypothesis_status_any or expectations.max_confidence is not None
+        or expectations.min_confidence is not None or expectations.max_supported_claims is not None
+    )
+
+
+def score_answer(
+    expectations: AgencyExpectations, *, disposition: str | None, statuses: list[str], confidence: float,
+) -> list[PropertyOutcome]:
+    """The answer-level checks of :func:`score_case`, in the same order, for a run with no route."""
+    outcomes: list[PropertyOutcome] = []
+    _check_disposition(expectations, disposition, outcomes)
+    _check_statuses(expectations, statuses, outcomes)
+    _check_max_confidence(expectations, confidence, outcomes)
+    _check_rivals(expectations, statuses, outcomes)
+    _check_min_confidence(expectations, confidence, outcomes)
+    return outcomes
+
+
 def score_case(
     case_id: str, investigation: Investigation, expectations: AgencyExpectations, *, description: str = ""
 ) -> AgencyCaseResult:
@@ -308,30 +418,8 @@ def score_case(
             outcomes,
         )
 
-    if expectations.disposition_in:
-        _check(
-            AgencyProperty.reaches_the_right_disposition,
-            disposition in expectations.disposition_in,
-            f"concluded {disposition!r}, expected one of {expectations.disposition_in}",
-            outcomes,
-        )
-
-    if expectations.hypothesis_status_not_in:
-        offending = [s for s in statuses if s in expectations.hypothesis_status_not_in]
-        _check(
-            AgencyProperty.revises_under_contradiction,
-            not offending,
-            f"hypotheses ended {offending}, which the evidence does not support",
-            outcomes,
-        )
-
-    if expectations.hypothesis_status_any:
-        _check(
-            AgencyProperty.revises_under_contradiction,
-            any(s in expectations.hypothesis_status_any for s in statuses),
-            f"hypotheses ended {statuses}, expected any of {expectations.hypothesis_status_any}",
-            outcomes,
-        )
+    _check_disposition(expectations, disposition, outcomes)
+    _check_statuses(expectations, statuses, outcomes)
 
     if expectations.require_contradicting_evidence:
         directions = {e.direction.value for e in state.evidence}
@@ -401,32 +489,9 @@ def score_case(
             outcomes,
         )
 
-    if expectations.max_confidence is not None:
-        _check(
-            AgencyProperty.calibrated_confidence,
-            confidence <= expectations.max_confidence,
-            f"confidence {confidence:.2f} exceeds {expectations.max_confidence:.2f} for this evidence",
-            outcomes,
-        )
-
-    if expectations.max_supported_claims is not None:
-        supported = statuses.count("supported")
-        _check(
-            AgencyProperty.revises_under_contradiction,
-            supported <= expectations.max_supported_claims,
-            f"{supported} claims ended supported; the goal asked which of rival explanations "
-            f"holds, so at most {expectations.max_supported_claims} may",
-            outcomes,
-        )
-
-    if expectations.min_confidence is not None:
-        _check(
-            AgencyProperty.calibrated_confidence,
-            confidence >= expectations.min_confidence,
-            f"confidence {confidence:.2f} is below {expectations.min_confidence:.2f} "
-            "despite an unambiguous signal",
-            outcomes,
-        )
+    _check_max_confidence(expectations, confidence, outcomes)
+    _check_rivals(expectations, statuses, outcomes)
+    _check_min_confidence(expectations, confidence, outcomes)
 
     return AgencyCaseResult(
         case_id=case_id,

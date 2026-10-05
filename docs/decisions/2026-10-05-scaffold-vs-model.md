@@ -262,8 +262,34 @@ null-case scores, though, understate how well a model would do with sound tools.
   asserts the scaffold's own behaviour. That's one more reason the cross-condition headline
   is `right_disposition`, not the full pass rate.
 
-### S4 — Condition C harness
-`backend/dev/`: fixture → prompt → JSON disposition → the same disposition scorer.
+### S4 — Condition C harness · **landed 2026-10-05**
+`backend/dev/bare_model.py`, run with `--condition bare` (or `CONDITION=bare` in the pilot
+script). One call per case: the question plus the whole table as CSV, and a JSON reply with a
+disposition, the claims weighed (with statuses) and a confidence. It uses the same
+responder, temperature 0 and `json_object` mode as the loop.
+
+- **Same checks, not a copy.** The answer-level checks were extracted from `score_case` into
+  shared helpers. `score_answer` runs those exact checks, in the same order. A parity test
+  scores every loop run's conclusion both ways across all 49 hand-written and generated
+  cases and requires identical outcomes. The suite reports are byte-identical before and
+  after the extraction.
+- **Only answer properties are scored**: `reaches_the_right_disposition`,
+  `revises_under_contradiction` and `calibrated_confidence`. Cases that assert only the
+  route (tools, critique, budget, termination) are skipped: 5 of the 19 hand-written cases.
+  All 30 generated cases are scorable. A C row is comparable with A/B on those properties,
+  never on the overall pass rate.
+- **Failures are typed like the loop's**: transport, invalid JSON or schema, under
+  `PolicyDecisionKind.bare_answer`. A failed call is scored as an empty answer, which is the
+  same thing a failed loop run concludes. So §5.7 applies equally: the headline must count
+  these as failed. Measured: through the pilot script against a stub that never returns
+  JSON, a bare row still scores 40% on core, all of it from overclaim cases an empty answer
+  cannot fail.
+- **No hints.** A test checks the prompt carries only the question and the table, never the
+  case id, description or expectations. The system prompt offers the same dispositions and
+  the same permission to decline as the loop's prompts.
+- C breaks the "no number from a model" invariant on purpose: its confidence is the model's
+  own. That's why it lives in `backend/dev/`, is never persisted, and has its own prompt
+  version (`BARE_PROMPT_VERSION`) recorded in the output JSON.
 
 ### S5 — Runner and report
 `scoreboard.py` gains model × condition dimensions, the taxonomy, and bootstrap CIs. The full

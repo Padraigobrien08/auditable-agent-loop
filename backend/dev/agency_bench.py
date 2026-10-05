@@ -38,7 +38,7 @@ import structlog
 
 from agentic.agent.ablations import LoopAblations
 from agentic.agent.budget import LoopBudget, SafetyLimits
-from agentic.agent.policy import AgentPolicy
+from agentic.agent.policy import AgentPolicy, Responder
 from agentic.domain import PolicyFailureKind
 from agentic.evaluation.agency import AgencyReport
 from agentic.evaluation.cases import SUITE_ID, CaseTier
@@ -52,6 +52,7 @@ from agentic.evaluation.scoreboard import (
 )
 from backend.agents.agentic_model_policy import AGENTIC_PROMPT_VERSION, build_agent_policy
 from backend.config.settings import Settings, get_settings
+from backend.dev.bare_model import BARE_PROMPT_VERSION, run_bare_suite
 from backend.llm.pricing import parse_model_prices
 
 log = structlog.get_logger(__name__)
@@ -61,6 +62,31 @@ MODEL = "model"
 
 #: Returns the policy for one row. Injectable so tests never construct a provider.
 PolicyFactory = Callable[[str, Settings], AgentPolicy]
+
+#: The investigation loop (conditions A and B) or a single bare call (condition C).
+LOOP = "loop"
+BARE = "bare"
+
+#: Returns the responder for a condition-C row and the function that drains its spend.
+BareFactory = Callable[[Settings], tuple[Responder, Callable[[], float]]]
+
+
+def _default_bare_factory(settings: Settings) -> tuple[Responder, Callable[[], float]]:
+    from backend.agents.agentic_model_policy import CostTrackingResponder
+    from backend.llm.exceptions import LLMProviderConfigurationError
+    from backend.llm.factory import get_chat_completion_provider
+
+    try:
+        provider = get_chat_completion_provider(settings)
+    except LLMProviderConfigurationError as exc:
+        raise SystemExit(
+            f"--condition bare needs an LLM provider: {exc}\n"
+            "Set EDGAR_BACKEND_LLM_PROVIDER=openai and EDGAR_BACKEND_OPENAI_API_KEY."
+        ) from exc
+    responder = CostTrackingResponder(
+        provider, model=settings.agent_completion_model,
+        prices=parse_model_prices(settings.llm_model_prices))
+    return responder, responder.drain_cost_usd
 
 
 def _default_policy_factory(kind: str, settings: Settings) -> AgentPolicy:
@@ -169,6 +195,8 @@ def run_policy_rows(
     tiers: tuple[CaseTier | None, ...] = (CaseTier.core, CaseTier.hard),
     settings: Settings | None = None,
     policy_factory: PolicyFactory = _default_policy_factory,
+    condition: str = LOOP,
+    bare_factory: BareFactory = _default_bare_factory,
 ) -> list[PolicyScorecard]:
     """
     Run the suite ``trials`` times per requested policy and aggregate one scorecard each.
@@ -186,20 +214,35 @@ def run_policy_rows(
     never approach the default, but a model served on a laptop can, and the run would then be
     scored as ``budget_exhausted`` — a measurement of the hardware filed as one of the model.
 
+    ``condition="bare"`` replaces the loop with one call per case (condition C, see
+    :mod:`backend.dev.bare_model`). Only model rows can run bare, ablations do not apply, and
+    only cases that assert something about the answer are scored, so compare a bare row with a
+    loop row on the answer properties, not on the overall pass rate.
+
     ``ablations`` switches scaffold components off for every row (condition B). The row label
     carries what was removed, so an ablated row can never be read as the full loop.
     """
     base = settings if settings is not None else get_settings()
     rows: list[PolicyScorecard] = []
 
+    if condition == BARE and (FIXTURE in kinds or ablations is not None):
+        raise SystemExit(
+            "--condition bare measures a model with no loop at all: it takes only --policy model "
+            "rows, and --ablate does not apply."
+        )
+
     for kind in kinds:
         row_settings = base.model_copy(update={"agent_completion_model": model}) if (
             kind == MODEL and model
         ) else base
-        policy = policy_factory(kind, row_settings)
-        label = _label(kind, model) + (ablations.label if ablations is not None else "")
+        if condition == BARE:
+            responder, drain = bare_factory(row_settings)
+            label = _label(kind, model) + " [bare]"
+        else:
+            policy = policy_factory(kind, row_settings)
+            label = _label(kind, model) + (ablations.label if ablations is not None else "")
 
-        if kind == MODEL and type(policy).__name__ == "FixtureAgentPolicy":
+        if condition == LOOP and kind == MODEL and type(policy).__name__ == "FixtureAgentPolicy":
             # Reporting a fixture result under a model's name would silently corrupt the
             # scoreboard's central claim, so refuse the row instead.
             log.error("agency_bench.no_provider", label=label)
@@ -225,13 +268,17 @@ def run_policy_rows(
             truncated = False
 
             for trial in range(trials):
-                observer = MetricsObserver()
-                reports.append(
-                    run_agency_suite(
-                        policy=policy, observer=observer, budget=budget, tier=tier, safety=safety,
-                        ablations=ablations)
-                )
-                fresh = observer.drain()
+                if condition == BARE:
+                    report, fresh = run_bare_suite(responder, tier=tier, drain_cost=drain)
+                    reports.append(report)
+                else:
+                    observer = MetricsObserver()
+                    reports.append(
+                        run_agency_suite(
+                            policy=policy, observer=observer, budget=budget, tier=tier, safety=safety,
+                            ablations=ablations)
+                    )
+                    fresh = observer.drain()
                 metrics.extend(fresh)
                 policy_metrics.extend(fresh)
                 spent = sum(m.cost_usd for m in policy_metrics)
@@ -302,6 +349,7 @@ def run_policy_rows(
 def _render_json(
     board: Scoreboard, *, trials: int, model: str | None, endpoint: str | None = None,
     max_elapsed_seconds: float | None = None, ablated: list[str] | None = None,
+    condition: str = LOOP,
 ) -> str:
     payload = {
         "suite_id": board.suite_id,
@@ -311,6 +359,9 @@ def _render_json(
         "endpoint": endpoint,
         "max_elapsed_seconds": max_elapsed_seconds,
         "ablated": ablated or [],
+        "condition": condition,
+        # The loop's prompts are versioned above; a bare row is driven by a different prompt.
+        "bare_prompt_version": BARE_PROMPT_VERSION if condition == BARE else None,
         "rows": [row.model_dump(mode="json") for row in board.rows],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
@@ -366,6 +417,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--condition",
+        choices=[LOOP, BARE],
+        default=LOOP,
+        help=(
+            "'loop' runs the investigation loop (conditions A and B). 'bare' asks the model once "
+            "per case with the raw table and no loop (condition C); model rows only."
+        ),
+    )
+    p.add_argument(
         "--tier",
         choices=[t.value for t in CaseTier] + ["all"],
         default="all",
@@ -402,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         max_elapsed_seconds=args.max_elapsed_seconds,
         ablations=LoopAblations.without(*args.ablate) if args.ablate else None,
         allow_unpriced=args.allow_unpriced,
+        condition=args.condition,
         tiers=(
             (CaseTier.core, CaseTier.hard) if args.tier == "all" else (CaseTier(args.tier),)
         ),
@@ -414,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         endpoint=_endpoint(get_settings()) if MODEL in kinds else None,
         max_elapsed_seconds=args.max_elapsed_seconds,
         ablated=sorted(args.ablate),
+        condition=args.condition,
     )
 
     if args.format in ("md", "both"):

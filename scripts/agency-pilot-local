@@ -16,6 +16,8 @@
 #   MAX_ELAPSED_SECONDS   per-investigation wall-clock budget, default 1800
 #   REQUEST_TIMEOUT_S     per model call, default 600
 #   OUT_DIR               default data/evaluation/agency/pilot-<date>
+#   CONDITION             loop (default; conditions A/B) or bare (condition C: one call, no loop)
+#   TIER                  all (default), core, hard or generated
 #   PYTHON                default python
 set -euo pipefail
 
@@ -27,6 +29,8 @@ MAX_ELAPSED_SECONDS="${MAX_ELAPSED_SECONDS:-1800}"
 REQUEST_TIMEOUT_S="${REQUEST_TIMEOUT_S:-600}"
 OUT_DIR="${OUT_DIR:-data/evaluation/agency/pilot-$(date +%F)}"
 PYTHON="${PYTHON:-python}"
+CONDITION="${CONDITION:-loop}"
+TIER="${TIER:-all}"
 
 if [ "$#" -gt 0 ]; then
   MODELS=("$@")
@@ -81,12 +85,13 @@ export EDGAR_BACKEND_OPENAI_TIMEOUT_S="$REQUEST_TIMEOUT_S"
 export EDGAR_BACKEND_LLM_MODEL_PRICES="$PRICES"
 
 for model in "${MODELS[@]}"; do
-  stem="$OUT_DIR/${model//[:\/]/_}"
+  stem="$OUT_DIR/${model//[:\/]/_}-${CONDITION}-${TIER}"
   echo "== $model -> $stem.{md,json}" >&2
   "$PYTHON" -m backend.dev.agency_bench \
     --policy model --model "$model" \
     --trials "$TRIALS" \
     --max-elapsed-seconds "$MAX_ELAPSED_SECONDS" \
+    --condition "$CONDITION" --tier "$TIER" \
     --format both --out "$stem"
 done
 

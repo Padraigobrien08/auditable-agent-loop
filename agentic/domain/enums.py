@@ -346,6 +346,8 @@ class PolicyDecisionKind(str, Enum):
     generate_hypotheses = "generate_hypotheses"
     select_experiment = "select_experiment"
     critique = "critique"
+    bare_answer = "bare_answer"
+    """Condition C of the scaffold-vs-model study: one call, no loop. Never on a product path."""
 
 
 class PolicyFailureKind(str, Enum):

@@ -46,7 +46,11 @@ def _raises_transport(_system: str, _user: str) -> str:
     raise PolicyTransportError("provider error: connection refused")
 
 
-@pytest.mark.parametrize("decision", list(PolicyDecisionKind))
+#: The loop's four decisions. `bare_answer` belongs to condition C (one call, no loop).
+_LOOP_DECISIONS = [d for d in PolicyDecisionKind if d is not PolicyDecisionKind.bare_answer]
+
+
+@pytest.mark.parametrize("decision", _LOOP_DECISIONS)
 @pytest.mark.parametrize(
     ("respond", "kind"),
     [
