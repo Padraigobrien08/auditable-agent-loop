@@ -339,6 +339,37 @@ class TerminationReason(str, Enum):
     user_stop = "user_stop"
 
 
+class PolicyDecisionKind(str, Enum):
+    """Which delegated decision a policy failure happened in — one per :class:`AgentPolicy` method."""
+
+    interpret_goal = "interpret_goal"
+    generate_hypotheses = "generate_hypotheses"
+    select_experiment = "select_experiment"
+    critique = "critique"
+
+
+class PolicyFailureKind(str, Enum):
+    """
+    How a policy decision failed.
+
+    ``TerminationReason.error`` alone cannot tell a model that cannot write JSON from a
+    provider that never answered, and the two mean opposite things about the model: one is
+    its failure, the other is the machine's. Measuring models of different sizes is only
+    honest when these are kept apart.
+    """
+
+    transport = "transport"
+    """The provider never produced a reply (timeout, refused connection, rate limit)."""
+    invalid_json = "invalid_json"
+    """A reply arrived but was not JSON at all — including an empty reply."""
+    schema = "schema"
+    """Valid JSON that failed the decision's typed schema."""
+    ungrounded = "ungrounded"
+    """Schema-valid, but referring to something that does not exist — e.g. a candidate
+    index past the end of the list. The loop treats it as declining to choose, so without
+    this record it reads as a principled stop."""
+
+
 # ---------------------------------------------------------------------------
 # Allowed transitions (validated by entity mutators)
 # ---------------------------------------------------------------------------

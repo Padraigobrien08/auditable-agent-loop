@@ -63,6 +63,7 @@ from .policy import (
     MalformedPolicyResponse,
     ModelAgentPolicy,
     PolicyPrompts,
+    PolicyTransportError,
 )
 from .replay import (
     ReplayNotPossible,
@@ -83,6 +84,7 @@ __all__ = [
     "DEFAULT_POLICY_PROMPTS",
     "AgentPolicyError",
     "MalformedPolicyResponse",
+    "PolicyTransportError",
     "AnalysisIntent",
     "GoalInterpretation",
     "ExperimentChoice",

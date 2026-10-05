@@ -21,6 +21,7 @@ from typing import Callable, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, ValidationError
 
 from agentic.domain.common import DomainModel
+from agentic.domain.enums import PolicyFailureKind
 
 
 class AnalysisIntent(str, Enum):
@@ -145,11 +146,27 @@ class AnswerNarration(DomainModel):
 
 
 class AgentPolicyError(RuntimeError):
-    """Base for policy failures (the loop terminates safely on these)."""
+    """Base for policy failures (the loop terminates safely on these).
+
+    ``kind`` is recorded on the termination, so the persisted run says *how* the decision
+    failed and not merely that it did.
+    """
+
+    kind: PolicyFailureKind = PolicyFailureKind.schema
 
 
 class MalformedPolicyResponse(AgentPolicyError):
     """The model returned output that failed typed validation."""
+
+    def __init__(self, message: str, *, kind: PolicyFailureKind = PolicyFailureKind.schema) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class PolicyTransportError(AgentPolicyError):
+    """The provider never produced a reply. A failure of the machine, not of the model."""
+
+    kind = PolicyFailureKind.transport
 
 
 # -- protocol ----------------------------------------------------------------
@@ -242,7 +259,11 @@ def drain_policy_cost(policy: object) -> float:
 # -- model-backed implementation --------------------------------------------
 
 Responder = Callable[[str, str], str]
-"""A function (system_prompt, user_prompt) -> raw JSON string."""
+"""A function (system_prompt, user_prompt) -> raw JSON string.
+
+A responder whose provider never answered raises :class:`PolicyTransportError` rather than
+returning ``""``: an empty string is something a model can genuinely emit, and conflating the
+two would charge an outage to the model."""
 
 
 @dataclass(frozen=True)
@@ -312,11 +333,13 @@ class ModelAgentPolicy:
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError) as exc:
-            raise MalformedPolicyResponse(f"policy response is not valid JSON: {exc}") from exc
+            raise MalformedPolicyResponse(
+                f"policy response is not valid JSON: {exc}", kind=PolicyFailureKind.invalid_json) from exc
         try:
             return model.model_validate(data)
         except ValidationError as exc:
-            raise MalformedPolicyResponse(f"policy response failed {model.__name__} validation: {exc}") from exc
+            raise MalformedPolicyResponse(
+                f"policy response failed {model.__name__} validation: {exc}", kind=PolicyFailureKind.schema) from exc
 
     def interpret_goal(self, goal_text: str, *, capability_summary: dict) -> GoalInterpretation:
         return self._call(

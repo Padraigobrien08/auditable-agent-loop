@@ -23,6 +23,7 @@ from agentic.agent import (
     InvestigationLoop,
     LoopBudget,
     LoopComponent,
+    PolicyTransportError,
 )
 from agentic.agent.observer import (
     ComponentCompleted,
@@ -178,9 +179,11 @@ def test_responder_accrues_cost_and_drain_resets_it() -> None:
     assert responder.drain_cost_usd() == 0.0, "drain must reset, so cost is never double-charged"
 
 
-def test_responder_returns_empty_string_and_no_cost_on_provider_error() -> None:
+def test_responder_raises_transport_error_and_no_cost_on_provider_error() -> None:
+    """An outage must not look like a model that answered with nothing — see PolicyFailureKind."""
     responder = CostTrackingResponder(_StubProvider(raises=True), model="m1", prices={})
-    assert responder("system", "user") == ""
+    with pytest.raises(PolicyTransportError, match="provider down"):
+        responder("system", "user")
     assert responder.drain_cost_usd() == 0.0
 
 

@@ -119,10 +119,22 @@ The existing per-property scoring stays. Three things are added:
 
 ## 8. Sequence
 
-### S0 — Make failures distinguishable
+### S0 — Make failures distinguishable · **landed 2026-10-05**
 The policy records *which decision failed* (interpret, generate, select, critique) and *how*
-(transport / invalid JSON / schema), as typed state that the scorer can read. This needs no
-provider. It is testable offline with the existing responder seam.
+(transport / invalid JSON / schema / ungrounded), as typed state that the scorer can read.
+
+- `TerminationDecision.policy_failure` (`PolicyFailure`), persisted through the existing
+  `termination_json` column, so no migration is needed. It surfaces as
+  `AgencyCaseResult.observed_policy_failure`.
+- The backend responder raises `PolicyTransportError` on a provider error instead of
+  returning `""`. An empty *model* reply stays `invalid_json`.
+- A selector index past the end of the candidate list is recorded as `ungrounded`. The
+  loop's behavior is unchanged: it still stops as if the selector had declined. Only the
+  record differs, so frozen results stay comparable.
+- **Not covered yet:** a critique naming a hypothesis id that does not exist. It doesn't
+  end the run, so it doesn't belong on the termination. If the pilot shows small models
+  doing it, it needs a per-decision record on the state, which means a column and a
+  migration.
 
 ### S1 — Local provider + pilot
 1. Point `openai_base_url` at Ollama's OpenAI-compatible endpoint.

@@ -31,6 +31,9 @@ from agentic.domain import (
     HypothesisStatus,
     InvestigationState,
     OpenQuestion,
+    PolicyDecisionKind,
+    PolicyFailure,
+    PolicyFailureKind,
     TerminationDecision,
     TerminationReason,
 )
@@ -400,11 +403,16 @@ class InvestigationPlanner:
 class ExperimentSelector:
     def __init__(self, policy: AgentPolicy) -> None:
         self._policy = policy
+        #: Set when the last selection named a candidate that does not exist. The selector
+        #: still returns ``None`` for it — the loop's behavior is unchanged — but the loop
+        #: copies this onto the termination so the stop is not mistaken for a principled one.
+        self.last_fault: PolicyFailure | None = None
 
     def select(
         self, state: InvestigationState, candidates: list[ExperimentRequest],
         interpretation: GoalInterpretation, tracker: BudgetTracker, idgen: DeterministicIds,
     ) -> ExperimentRequest | None:
+        self.last_fault = None
         if not candidates:
             return None
         summaries = [
@@ -417,7 +425,12 @@ class ExperimentSelector:
             tracker, self._policy,
             lambda: self._policy.select_experiment(
                 goal_summary={"intent": interpretation.intent.value}, candidates=summaries))
-        if choice.request_index is None or not (0 <= choice.request_index < len(candidates)):
+        if choice.request_index is None:
+            return None
+        if not (0 <= choice.request_index < len(candidates)):
+            self.last_fault = PolicyFailure(
+                decision=PolicyDecisionKind.select_experiment, kind=PolicyFailureKind.ungrounded,
+                detail=f"request_index {choice.request_index} outside 0..{len(candidates) - 1}")
             return None
         chosen = candidates[choice.request_index]
         self._accept(state, chosen, idgen, choice.rationale or "selected next experiment")
@@ -1374,8 +1387,11 @@ def _metric_vocabulary(state: InvestigationState) -> list[str]:
     return names
 
 
-def make_termination(reason: TerminationReason, state: InvestigationState, idgen: DeterministicIds) -> TerminationDecision:
+def make_termination(
+    reason: TerminationReason, state: InvestigationState, idgen: DeterministicIds, *,
+    policy_failure: PolicyFailure | None = None,
+) -> TerminationDecision:
     return TerminationDecision(
         should_stop=True, reason=reason,
         rationale=f"terminated: {reason.value}", at_iteration=state.budget.iterations_used,
-        provenance=_prov("termination_policy"))
+        provenance=_prov("termination_policy"), policy_failure=policy_failure)

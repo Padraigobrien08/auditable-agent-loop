@@ -25,7 +25,7 @@ from enum import Enum
 
 from pydantic import Field
 
-from agentic.domain import Investigation
+from agentic.domain import Investigation, PolicyFailure
 from agentic.domain.common import DomainModel
 
 
@@ -127,6 +127,10 @@ class AgencyCaseResult(DomainModel):
     observed_challenge_tools: list[str] = Field(default_factory=list)
     #: Head of the run's ranking, when it ranked at all.
     observed_ranked_first: str | None = None
+    #: The policy decision that ended the run, and how it failed. Kept beside the verdict so
+    #: a model that cannot produce valid output is not read as one that reasons badly, and a
+    #: provider outage is not charged to the model at all.
+    observed_policy_failure: PolicyFailure | None = None
 
     @property
     def failures(self) -> list[PropertyOutcome]:
@@ -416,4 +420,5 @@ def score_case(
         observed_confidence=round(confidence, 6),
         observed_challenge_tools=challenge_tools,
         observed_ranked_first=ranked_first,
+        observed_policy_failure=state.termination.policy_failure if state.termination is not None else None,
     )
