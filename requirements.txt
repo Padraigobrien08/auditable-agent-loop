@@ -1,6 +1,9 @@
 pandas>=3.0.5
 numpy>=2.5.1
 requests>=2.28
+# Transitive (requests, botocore), floored directly so a lock regeneration cannot fall back
+# below the fix for PYSEC-2026-4175..4177.
+urllib3>=2.8.0
 tabulate>=0.10.0
 pydantic>=2.0
 mcp>=1.0,<2.0
