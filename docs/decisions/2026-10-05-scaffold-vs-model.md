@@ -360,6 +360,18 @@ honest pass rate, within Z of frontier."* (Honest pass, not disposition accuracy
     because slot 3 (aqua) is below 3:1 contrast on the light background.
   - Light and dark layouts were checked by rendering synthetic preview data in Chromium.
     That data was never committed.
+  - Identical series (common when a component changes nothing) draw exactly on top of
+    each other. The reference condition A is drawn last, and identical series share one
+    label ("A = B 100%"), so an equal line never looks absent.
+  - **PNG export:** `study report --png` (`backend/dev/study_png.py`) writes `name.png` and
+    `name-dark.png` at 2× for places that don't take SVG (Substack, slides).
+    - It needs Chrome's **headless shell**. Full Chrome's headless mode renders into a
+      viewport about 100 px shorter than the window, so it clips the figure while still
+      writing a PNG of the requested size.
+    - Every PNG's dimensions are checked against the SVG's, and a mismatch is refused and
+      deleted.
+    - Install with `npx playwright install chromium-headless-shell`, or set
+      `STUDY_HEADLESS_SHELL`.
 - **Draft** (`docs/writeup/2026-10-scaffold-vs-model.md`). The question, scoring and
   limits are written. "Found along the way" covers the six findings made while building
   the measurement, every figure traceable to a run. **Results are empty slots, each naming

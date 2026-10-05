@@ -87,6 +87,29 @@ def _legend(slots: dict[str, int], x: float, y: float) -> str:
     return "".join(out)
 
 
+def _draw_order(slots: dict[str, int]) -> list[tuple[str, int]]:
+    """Reverse slot order, so the reference condition (A) is drawn last and never hidden."""
+    return list(reversed(list(slots.items())))
+
+
+def _merge_identical(entries: list[tuple[float, str, str, object]]) -> list[tuple[float, str, int]]:
+    """
+    One label per distinct series: ``(y, condition, value, signature)`` entries that share a
+    signature become "A = B value". Identical series draw exactly on top of each other, so
+    without this one of them looks absent rather than equal.
+    """
+    groups: dict[object, list[tuple[float, str, str]]] = {}
+    for y, condition, value, signature in entries:
+        # The shown value is part of the key: two series merge only when what the label would
+        # say is the same too, so a merge can never hide a value.
+        groups.setdefault((signature, value), []).append((y, condition, value))
+    merged = []
+    for members in groups.values():
+        names = " = ".join(sorted(c for _, c, _ in members))
+        merged.append((members[0][0], f"{names} {members[0][2]}", 0))
+    return merged
+
+
 def _spread(labels: list[tuple[float, str, int]], gap: float = 13.0) -> list[tuple[float, str, int]]:
     """Nudge end labels apart vertically so none overlap, keeping their order."""
     placed: list[tuple[float, str, int]] = []
@@ -163,8 +186,9 @@ def headline_svg(report: StudyReport) -> str:
         def y_of(v: float) -> float:
             return oy + ph - ph * v  # noqa: B023 - bound per panel, used within the iteration
 
-        labels: list[tuple[float, str, int]] = []
-        for condition, slot in slots.items():
+        labels: list[tuple[float, str, str, object]] = []
+        no_model: list[tuple[float, str, str, object]] = []
+        for condition, slot in _draw_order(slots):
             cells = [c for c in report.cells if c.tier == tier and c.condition == condition]
             line = sorted((c for c in cells if c.size_b), key=lambda c: c.size_b or 0)
             if line:
@@ -175,9 +199,11 @@ def headline_svg(report: StudyReport) -> str:
                 body.append(f'<polyline points="{path}" fill="none" stroke="var(--s{slot})" stroke-width="2" '
                             'stroke-linejoin="round" stroke-linecap="round"/>')
                 end = line[-1]
-                labels.append((y_of(end.rate), f"{condition} {end.rate:.0%}", slot))
+                signature = tuple((c.size_b, c.rate, c.ci_low, c.ci_high) for c in line)
+                labels.append((y_of(end.rate), condition, f"{end.rate:.0%}", signature))
             for c in cells:
                 if c.size_b == 0:
+                    no_model.append((0.0, condition, f"{c.rate:.0%}", (c.rate, c.ci_low, c.ci_high)))
                     x = x_of(0, ox)
                     body.append(f'<line x1="{x:.1f}" y1="{y_of(c.ci_low):.1f}" x2="{x:.1f}" '
                                 f'y2="{y_of(c.ci_high):.1f}" stroke="var(--s{slot})" stroke-width="1"/>')
@@ -188,10 +214,16 @@ def headline_svg(report: StudyReport) -> str:
                 y = y_of(ref.rate)
                 body.append(f'<line x1="{ox + scale_left}" y1="{y:.1f}" x2="{ox + pw}" y2="{y:.1f}" '
                             f'stroke="var(--s{slot})" stroke-width="1"/>')
-                body.append(f'<text x="{ox + scale_left + 2}" y="{y - 4:.1f}" class="t2" font-size="10">'
+                body.append(f'<text x="{ox + scale_left + 2}" y="{y + 12:.1f}" class="t2" font-size="10">'
                             f"{escape(ref.model)} ({condition}) {ref.rate:.0%}</text>")
-        for y, text, _slot in _spread(labels):
+        for y, text, _slot in _spread(_merge_identical(labels)):
             body.append(f'<text x="{ox + pw + 4}" y="{y + 4:.1f}" class="t2" font-size="11">{escape(text)}</text>')
+        if no_model:
+            # A second line under the "no model" tick, not beside the points: the slot is narrow,
+            # the first model's line starts just to its right, and the header holds the title.
+            summary = " · ".join(text for _, text, _ in sorted(_merge_identical(no_model), key=lambda m: m[1]))
+            body.append(f'<text x="{ox + zero_slot}" y="{oy + ph + 29}" class="t2" font-size="10" '
+                        f'text-anchor="middle">{escape(summary)}</text>')
 
     width = max(1, len(tiers)) * _W
     desc = ("Honest pass rate (answer properties, structural failures counted as failed) against model "
@@ -227,8 +259,8 @@ def sweep_svg(curves: list[SweepCurve]) -> str:
                         f'text-anchor="middle">{t}</text>')
         body.append(f'<text x="{ox + pw / 2:.1f}" y="{oy + ph + 32}" class="t2" font-size="11" '
                     'text-anchor="middle">realised slope t (signal strength)</text>')
-        labels: list[tuple[float, str, int]] = []
-        for condition, slot in slots.items():
+        labels: list[tuple[float, str, str, object]] = []
+        for condition, slot in _draw_order(slots):
             curve = next((c for c in curves if c.model == model and c.condition == condition), None)
             if curve is None or not curve.levels:
                 continue
@@ -240,8 +272,9 @@ def sweep_svg(curves: list[SweepCurve]) -> str:
             # Line only, with an end dot: twelve markers per line crowd the steep region.
             body.append(_marker(*pts[-1], slot))
             t50 = f"t50 {curve.t50:.1f}" if curve.t50 is not None else _SHORT_NOTES.get(curve.t50_note, curve.t50_note)
-            labels.append((pts[-1][1], f"{condition} {t50}", slot))
-        for y, text, _slot in _spread(labels):
+            signature = tuple((lv.mean_realised_t, lv.claim_rate) for lv in curve.levels)
+            labels.append((pts[-1][1], condition, t50, signature))
+        for y, text, _slot in _spread(_merge_identical(labels)):
             body.append(f'<text x="{ox + pw + 4}" y="{y + 4:.1f}" class="t2" font-size="11">{escape(text)}</text>')
 
     width = max(1, len(models)) * _W

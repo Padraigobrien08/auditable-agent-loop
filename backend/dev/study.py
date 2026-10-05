@@ -27,6 +27,7 @@ Usage::
         --tier core --trials 1 --sweep
 
     python -m backend.dev.study report data/evaluation/agency/study
+    python -m backend.dev.study report data/evaluation/agency/study --png   # + PNGs for Substack
 
 Conditions: ``A`` is the full loop; ``B`` the loop with critic, typed termination and the
 mutual-exclusivity check all off; ``B-critic`` (etc.) one component off; ``C`` the bare model.
@@ -218,7 +219,7 @@ def load_observations(out: Path) -> list[Observation]:
     return obs
 
 
-def write_report(out: Path) -> str:
+def write_report(out: Path, *, png: bool = False) -> str:
     report = analyse(load_observations(out), load_sweeps(out))
     markdown = report.to_markdown()
     (out / "study.md").write_text(markdown + "\n", encoding="utf-8")
@@ -229,6 +230,10 @@ def write_report(out: Path) -> str:
         (figures / "headline.svg").write_text(headline_svg(report), encoding="utf-8")
     if report.sweeps:
         (figures / "sweep.svg").write_text(sweep_svg(report.sweeps), encoding="utf-8")
+    if png:
+        from backend.dev.study_png import export_all
+
+        export_all(figures)
     return markdown
 
 
@@ -251,13 +256,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     rep = sub.add_parser("report", help="Analyse the persisted cells.")
     rep.add_argument("out", type=Path)
+    rep.add_argument("--png", action="store_true",
+                     help="Also write light and dark PNGs of each figure (needs Chrome's headless shell).")
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "report":
-        print(write_report(args.out))
+        print(write_report(args.out, png=args.png))
         return 0
 
     tiers = tuple(CaseTier(t) for t in args.tier)
