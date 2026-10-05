@@ -979,14 +979,9 @@ class TerminationPolicy:
         self, state: InvestigationState, tracker: BudgetTracker, iterations: int, *,
         executed_tools: set[str], intent_tools: list[str], user_stop: bool,
     ) -> tuple[bool, TerminationReason | None]:
-        if user_stop or tracker.user_stop_requested:
-            return True, TerminationReason.user_stop
-        if tracker.safety_violated(iterations):
-            return True, TerminationReason.safety_constraint
-        if tracker.repeated_failure():
-            return True, TerminationReason.repeated_failure
-        if tracker.budget_exhausted():
-            return True, TerminationReason.budget_exhausted
+        hard = self._hard_stop(tracker, iterations, user_stop=user_stop)
+        if hard is not None:
+            return True, hard
         # Sufficiency means the *investigation* is done, not that one claim landed. Firing on the
         # first supported hypothesis leaves every other claim stranded at `proposed` — the same
         # single-metric bug this phase removes, relocated one step later.
@@ -1026,6 +1021,19 @@ class TerminationPolicy:
         return False, None
 
     @staticmethod
+    def _hard_stop(tracker: BudgetTracker, iterations: int, *, user_stop: bool) -> TerminationReason | None:
+        """Stops that bound cost and safety rather than judge the evidence."""
+        if user_stop or tracker.user_stop_requested:
+            return TerminationReason.user_stop
+        if tracker.safety_violated(iterations):
+            return TerminationReason.safety_constraint
+        if tracker.repeated_failure():
+            return TerminationReason.repeated_failure
+        if tracker.budget_exhausted():
+            return TerminationReason.budget_exhausted
+        return None
+
+    @staticmethod
     def _unresolved_contradiction(state: InvestigationState) -> Critique | None:
         return next(iter(open_contradictions(state)), None)
 
@@ -1049,6 +1057,37 @@ class TerminationPolicy:
         if ran_any:
             return TerminationReason.insufficient_evidence
         return TerminationReason.no_valid_experiment
+
+
+class NaiveTerminationPolicy(TerminationPolicy):
+    """
+    Termination with the judgement removed: stop at the first claim that clears the bar.
+
+    The ablation for ``LoopAblations.typed_termination`` and never a product path. It is the
+    rule the typed policy replaced, kept on purpose so its cost can be measured: a run stops
+    with rival claims still ``proposed`` and conflicts still open. Budget, safety and
+    user-stop limits are inherited unchanged, because they bound cost and not reasoning.
+    """
+
+    def decide(
+        self, state: InvestigationState, tracker: BudgetTracker, iterations: int, *,
+        executed_tools: set[str], intent_tools: list[str], user_stop: bool,
+    ) -> tuple[bool, TerminationReason | None]:
+        hard = self._hard_stop(tracker, iterations, user_stop=user_stop)
+        if hard is not None:
+            return True, hard
+        if self._any_sufficient(state):
+            return True, TerminationReason.sufficient_evidence
+        return False, None
+
+    def finalize_no_candidates(self, state: InvestigationState, ran_any: bool) -> TerminationReason:
+        if self._any_sufficient(state):
+            return TerminationReason.sufficient_evidence
+        return TerminationReason.insufficient_evidence if ran_any else TerminationReason.no_valid_experiment
+
+    def _any_sufficient(self, state: InvestigationState) -> bool:
+        return any(h.status is HypothesisStatus.supported and h.confidence >= self.SUFFICIENT_CONFIDENCE
+                   for h in state.hypotheses)
 
 
 # ---------------------------------------------------------------------------

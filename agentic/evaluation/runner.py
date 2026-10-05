@@ -10,6 +10,7 @@ a real model reasons as well as the deterministic baseline — which is the poin
 from __future__ import annotations
 
 from agentic.adapters import AdapterRequest, InMemoryDatasetAdapter
+from agentic.agent.ablations import LoopAblations
 from agentic.agent.budget import LoopBudget, SafetyLimits
 from agentic.agent.loop import InvestigationLoop
 from agentic.agent.observer import AgentObserver
@@ -27,6 +28,7 @@ def run_case(
     budget: LoopBudget | None = None,
     safety: SafetyLimits | None = None,
     observer: AgentObserver | None = None,
+    ablations: LoopAblations | None = None,
 ) -> AgencyCaseResult:
     """Run one agency case end to end and score it.
 
@@ -59,6 +61,8 @@ def run_case(
         loop_kwargs["policy"] = policy
     if observer is not None:
         loop_kwargs["observer"] = observer
+    if ablations is not None:
+        loop_kwargs["ablations"] = ablations
     loop = InvestigationLoop(**loop_kwargs)  # type: ignore[arg-type]
     investigation = loop.start(
         case.goal,
@@ -84,6 +88,7 @@ def run_agency_suite(
     budget: LoopBudget | None = None,
     tier: CaseTier | None = None,
     safety: SafetyLimits | None = None,
+    ablations: LoopAblations | None = None,
 ) -> AgencyReport:
     """Run every case and aggregate a report.
 
@@ -98,7 +103,8 @@ def run_agency_suite(
     if tier is not None:
         cases = cases_for_tier(tier, cases)
     results = [
-        run_case(case, policy=policy, observer=observer, budget=budget, safety=safety) for case in cases
+        run_case(case, policy=policy, observer=observer, budget=budget, safety=safety, ablations=ablations)
+        for case in cases
     ]
     return AgencyReport(
         suite_id=suite_id,

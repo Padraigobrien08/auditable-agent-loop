@@ -450,3 +450,25 @@ def test_a_provider_that_never_answers_is_reported_as_such() -> None:
             ["model"], model="priced-model", trials=3, settings=priced,
             policy_factory=lambda kind, s: _UnreachablePolicy(),
         )
+
+
+def test_an_ablated_row_names_what_was_removed(tmp_path) -> None:  # noqa: ANN001 - pytest fixture
+    """An ablated row must never be readable as the full loop, in the table or the JSON."""
+    out = tmp_path / "board"
+    main(["--policy", "fixture", "--trials", "1", "--tier", "core",
+          "--ablate", "critic", "--ablate", "typed_termination",
+          "--format", "both", "--out", str(out)])
+
+    payload = json.loads(out.with_suffix(".json").read_text())
+    assert payload["ablated"] == ["critic", "typed_termination"]
+    assert [r["label"] for r in payload["rows"]] == ["fixture -critic -typed_termination"]
+    assert "| fixture -critic -typed_termination |" in out.with_suffix(".md").read_text()
+
+
+def test_an_unablated_run_records_no_ablation(tmp_path) -> None:  # noqa: ANN001 - pytest fixture
+    out = tmp_path / "board"
+    main(["--policy", "fixture", "--trials", "1", "--tier", "core", "--format", "json", "--out", str(out)])
+
+    payload = json.loads(out.with_suffix(".json").read_text())
+    assert payload["ablated"] == []
+    assert [r["label"] for r in payload["rows"]] == ["fixture"]
