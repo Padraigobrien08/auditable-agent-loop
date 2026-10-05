@@ -380,12 +380,12 @@ class StudyReport(DomainModel):
                 "| model | size (B) | condition | t50 | " + " | ".join(f"{t:g}" for t in targets) + " | excluded |",
                 "|---|---|---|---|" + "---|" * len(targets) + "---|",
             ]
-            for c in sorted(self.sweeps, key=lambda c: (c.size_b is None, c.size_b or 0, c.model, c.condition)):
-                rates = {lv.target_t: lv.claim_rate for lv in c.levels}
-                size = "—" if c.size_b is None else f"{c.size_b:g}"
-                t50 = f"{c.t50:.2f}" if c.t50 is not None else c.t50_note
-                cells = " | ".join(f"{rates[t]:.0%}" if t in rates else "—" for t in targets)
-                lines.append(f"| {c.model} | {size} | {c.condition} | {t50} | {cells} | {c.excluded} |")
+            for curve in sorted(self.sweeps, key=lambda s: (s.size_b is None, s.size_b or 0, s.model, s.condition)):
+                rates = {lv.target_t: lv.claim_rate for lv in curve.levels}
+                size = "—" if curve.size_b is None else f"{curve.size_b:g}"
+                t50 = f"{curve.t50:.2f}" if curve.t50 is not None else curve.t50_note
+                row = " | ".join(f"{rates[t]:.0%}" if t in rates else "—" for t in targets)
+                lines.append(f"| {curve.model} | {size} | {curve.condition} | {t50} | {row} | {curve.excluded} |")
         return "\n".join(lines)
 
 
