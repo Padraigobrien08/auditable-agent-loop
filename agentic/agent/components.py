@@ -613,7 +613,13 @@ class EvidenceUpdater:
         for e, target in [(e, t) for e in record.evidence for t in targets]:
             hyp = state.find_hypothesis(target) if target else None
             expected = expectation_direction(hyp) if hyp is not None else None
-            if expected is not None:
+            if expected is not None and e.direction is EvidenceDirection.neutral:
+                # The tool's own verdict that it found nothing comes first. A shift or slope
+                # always has *a* sign, and reading support off that sign turned a change point
+                # the tool had judged insignificant, or a trend fit with R² = 0.01, into
+                # evidence for whichever direction the claim happened to name.
+                direction = EvidenceDirection.neutral
+            elif expected is not None:
                 # Prefer the evidence item's own directional statistic (e.g. per-entity
                 # slope), so opposing signals in one experiment yield contradictory evidence.
                 signal = self._evidence_sign(e)

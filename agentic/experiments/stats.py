@@ -168,6 +168,83 @@ def cramers_v(contingency: np.ndarray) -> dict[str, float]:
 # Evidence strength inputs -> bounded (strength, reliability, coverage)
 # ---------------------------------------------------------------------------
 
+def _split_scores(y: np.ndarray, min_segment: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Standardised mean shift at every admissible split, for each row of ``y``.
+
+    ``y`` is 2-D (one series per row). Returns ``(splits, scores, shifts)`` where ``splits`` are
+    the split indices and ``scores``/``shifts`` have one column per split. Cumulative sums make
+    this O(n) per series, which is what lets the permutation test below stay cheap.
+    """
+    n = y.shape[1]
+    splits = np.arange(min_segment, n - min_segment + 1)
+    cs = np.cumsum(y, axis=1)
+    cs2 = np.cumsum(y * y, axis=1)
+    left_n = splits.astype(float)
+    right_n = n - left_n
+    left_sum = cs[:, splits - 1]
+    right_sum = cs[:, -1:] - left_sum
+    left_mean = left_sum / left_n
+    right_mean = right_sum / right_n
+    left_ss = cs2[:, splits - 1] - left_n * left_mean ** 2
+    right_ss = (cs2[:, -1:] - cs2[:, splits - 1]) - right_n * right_mean ** 2
+    pooled_var = np.clip(left_ss + right_ss, 0.0, None) / n
+    # Variance at the level of floating-point dust is zero. Without this, two exactly flat
+    # segments score ~1e15 or 0 depending on rounding; with it they take the same fallback as
+    # an exact zero (score = |shift|), which is what a hand-built step fixture gets.
+    scale = np.mean(y * y, axis=1, keepdims=True)
+    pooled_var = np.where(pooled_var > 1e-12 * np.maximum(scale, 1.0), pooled_var, 0.0)
+    pooled = np.where(pooled_var > 0, np.sqrt(pooled_var), 1.0)
+    shifts = right_mean - left_mean
+    return splits, np.abs(shifts) / pooled, shifts
+
+
+def max_mean_shift(values: np.ndarray, min_segment: int) -> dict[str, float]:
+    """
+    The single split with the largest standardised mean shift.
+
+    The score is a *maximum over every split*, so it is not an effect size of a pre-chosen
+    contrast: on pure noise the largest of many standardised shifts is routinely large. Read
+    it only alongside :func:`max_mean_shift_p_value`, which asks how often noise does as well.
+    """
+    y = np.asarray(values, dtype=float)
+    splits, scores, shifts = _split_scores(y[None, :], min_segment)
+    best = int(np.argmax(scores[0]))
+    return {"split": float(splits[best]), "score": float(scores[0, best]), "shift": float(shifts[0, best])}
+
+
+#: Fixed, so the same series always gets the same p-value: a run must be reproducible from
+#: its persisted state, and a p-value that moved between replays would break that.
+_PERMUTATION_SEED = 20261005
+
+
+def max_mean_shift_p_value(
+    values: np.ndarray, min_segment: int, *, permutations: int = 999, chunk: int = 100,
+) -> float:
+    """
+    Permutation p-value for :func:`max_mean_shift`'s score.
+
+    The null is exchangeability: no change point, so every ordering of the values is equally
+    likely. The statistic is recomputed as the maximum over all splits for each shuffle, which
+    is what makes the test honest about the search: comparing the selected split's score with a
+    fixed threshold ignores that it was chosen as the largest of many.
+    """
+    y = np.asarray(values, dtype=float)
+    observed = max_mean_shift(y, min_segment)["score"]
+    rng = np.random.default_rng(_PERMUTATION_SEED)
+    at_least = 0
+    remaining = permutations
+    while remaining > 0:
+        batch = min(chunk, remaining)
+        shuffled = rng.permuted(np.tile(y, (batch, 1)), axis=1)
+        _, scores, _ = _split_scores(shuffled, min_segment)
+        # A small tolerance, so a shuffle that reproduces the observed series counts as "as
+        # extreme" despite floating-point noise in the cumulative sums.
+        at_least += int(np.sum(scores.max(axis=1) >= observed - 1e-9))
+        remaining -= batch
+    return (at_least + 1) / (permutations + 1)
+
+
 _EFFECT_NORMALIZERS = {
     "cohens_d": 0.8,      # |d| >= 0.8 is a large effect
     "pearson_r": 1.0,
