@@ -180,13 +180,55 @@ already saturate?
 - If the largest size saturates: the generator (S2) moves ahead of everything, with weaker
   signal.
 
-### S2 — Case generator
-Parameterised signal strength, paired twins, a new tier. Pilot results set the signal range.
+### S2 — Case generator · **landed 2026-10-05**
+`agentic/evaluation/generated.py`: 30 scored cases in a new `generated` tier (suite id
+`suite_agency_generated_v1`, never part of `AGENCY_CASES`), plus a 36-point unscored sweep.
+Run with `--tier generated`, or `run_signal_sweep()` for the curve.
 
-**Must include rival-claim cases.** S3 found that no existing case poses alternatives
-("is it X, or Y?"), so ablating the mutual-exclusivity check changes nothing anywhere in the
-suite. The generator needs either-or goals where both claims can look supported, each with
-a twin where one claim is genuinely right.
+- **Ground truth comes from the generating process, not the loop.** The loop calls a trend
+  supported at R² ≥ 0.5. Using that as the answer key would make the full loop pass by
+  construction. Instead each series has a known slope, and its realised OLS t-statistic is
+  computed with numpy, independently of the tools. Scoring only happens where the answer is
+  not in doubt:
+  - **clear:** |t| ≥ 10 in the stated direction; must conclude.
+  - **null:** true slope 0, |t| < 1; no directional claim may stand.
+  - **contradicted:** clear the other way; the claim must not stand.
+
+  Levels in between form the sweep. It's read as a curve (the realised t at which a
+  configuration starts claiming), never as a pass rate.
+- **8 trend families × (clear, null, contradicted)** across 4 domains with different column
+  names and time formats, lengths 8–16, both directions.
+- **3 rival pairs on step data.** "Is X rising steadily, or was there a one-off jump?" must
+  not end with both supported. The twin asks plainly "is X increasing?" over the same data
+  and must conclude. A test shows that with a policy that proposes both branches, the full
+  loop passes and `-mutual_exclusivity` affirms both at 0.95. This tier can see the
+  ablation the hand-written suite couldn't.
+- Every case is reproducible from its fixture id (`gen:trend:rainfall:n12:t15:seed3`).
+  Seeds come from a fixed search, never at random.
+- The "never affirm both rivals" check is scored under the existing
+  `revises_under_contradiction` property. A new property can't be exercised in the core
+  tier, because the rule-based policy only ever proposes one claim, and the suite's guards
+  rightly refuse a property nothing in core measures.
+
+**Rule-based policy on this tier: 23/30**, the same under every ablation.
+- The 3 rival cases fail because it proposes a single claim and never weighs the alternative.
+- 4 of the 8 null cases fail because of a scaffold defect, below.
+
+**Finding: the change-point tool manufactures trends from noise.** `detect_change_points`
+scores the *maximum* of |shift| / pooled SD over every split. That's a selection statistic:
+on pure noise the maximum routinely exceeds 0.8, which is labelled Cohen's d and normalised
+to evidence strength 1.0. When the noise's largest shift points the way the goal does, the
+loop supports the directional claim at 0.95 on data whose trend fit says R² = 0.01. The
+sweep shows the rule-based policy claiming a trend at realised t = 0.37. The hand-written
+`noise_is_not_a_trend` passes only because its shift points the other way.
+
+This is a defect in the deterministic compute, the part the project's invariant trusts.
+It is **not fixed here**: fixing it changes product behaviour and possibly the published
+runs, so it needs a decision. A fix would calibrate the score against its null
+distribution (a permutation or analytic max-statistic critical value), or stop letting a
+non-directional shift support a directional trend claim. Until it's fixed, every condition
+inherits the same false-positive source, so A vs B vs C comparisons stay fair. Absolute
+null-case scores, though, understate how well a model would do with sound tools.
 
 ### S3 — Condition B flags · **landed 2026-10-05**
 `LoopAblations` (`agentic/agent/ablations.py`) has three switches, all on by default:

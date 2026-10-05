@@ -47,6 +47,12 @@ class CaseTier(str, Enum):
     hard = "hard"
     """Requires judgement a keyword-matching rule engine cannot supply — it must fail one."""
 
+    generated = "generated"
+    """Parameterised cases from :mod:`agentic.evaluation.generated`. Never in
+    :data:`AGENCY_CASES`, so ``suite_agency_v2`` numbers keep their meaning. Not subject to the
+    hard tier's admission rule: these measure calibration across signal strength, not headroom
+    over the rule engine."""
+
 
 #: The frozen, published suite. Never add to this.
 SUITE_V1_ID = "suite_agency_v1"
