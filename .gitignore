@@ -77,3 +77,7 @@ frontend/.impeccable/
 # password hashes. Never commit these.
 var/
 *.dump
+
+# Local planning scratch (GSD-era roadmaps and phase notes). Tracked plans live in
+# docs/decisions/; anything here is the author's working notes and stays off the repo.
+.planning/

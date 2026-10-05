@@ -10,7 +10,7 @@ every run is reproducible from persisted structured state.
 `insufficient_evidence` and `rejected` are first-class outcomes. Never turn uncertainty into
 an error, a silent fallback, or a fabricated number.
 
-Active plan: `docs/decisions/2026-08-11-showcase-direction.md`. It supersedes `.planning/`.
+Active plan: `docs/decisions/2026-10-05-scaffold-vs-model.md` (hosting decisions still from `2026-08-11-showcase-direction.md`). `.planning/` is local-only and gitignored; never cite it from tracked files.
 
 ## Commands
 
