@@ -63,6 +63,10 @@ MODEL = "model"
 #: Returns the policy for one row. Injectable so tests never construct a provider.
 PolicyFactory = Callable[[str, Settings], AgentPolicy]
 
+#: Receives one tier's raw trial reports before they are aggregated: the per-case results
+#: the scoreboard averages away, which a study needs for paired comparisons and intervals.
+TierHook = Callable[[str, CaseTier | None, list[AgencyReport], list[RunMetrics], bool], None]
+
 #: The investigation loop (conditions A and B) or a single bare call (condition C).
 LOOP = "loop"
 BARE = "bare"
@@ -197,6 +201,7 @@ def run_policy_rows(
     policy_factory: PolicyFactory = _default_policy_factory,
     condition: str = LOOP,
     bare_factory: BareFactory = _default_bare_factory,
+    on_tier: TierHook | None = None,
 ) -> list[PolicyScorecard]:
     """
     Run the suite ``trials`` times per requested policy and aggregate one scorecard each.
@@ -336,6 +341,8 @@ def run_policy_rows(
                     truncated = True
                     break
 
+            if on_tier is not None:
+                on_tier(label, tier, reports, metrics, truncated)
             rows.append(
                 aggregate_trials(
                     label, reports, metrics,
