@@ -41,9 +41,13 @@ EXPECTED_PATHS: dict[str, tuple[list[str], str, str, float]] = {
         ["analyze_time_series_trend", "detect_change_points", "summarize_distribution"],
         "insufficient_evidence", "insufficient_evidence", 0.2,
     ),
+    # Re-pinned deliberately on 2026-10-05 with detect_change_points 1.1. Was ("refuted", 0.6):
+    # the uncalibrated change-point score of pure noise refuted "increasing" at strength 1.0,
+    # which is itself an overclaim of the opposite direction. Same route, same termination,
+    # same pass. Only the conclusion is now the honest one. See docs/agent/agency-scoreboard.md.
     "noise_is_not_a_trend": (
         ["analyze_time_series_trend", "detect_change_points", "summarize_distribution"],
-        "insufficient_evidence", "refuted", 0.6,
+        "insufficient_evidence", "insufficient_evidence", 0.2,
     ),
     "two_points_are_not_a_trend": (
         ["summarize_distribution"],

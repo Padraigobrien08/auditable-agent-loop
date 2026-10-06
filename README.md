@@ -120,7 +120,7 @@ from the runs they described.
 | [`edgar-margin-vs-growth`](frontend/src/lib/demo-static/edgar-margin-vs-growth.json) | **refuted** — the run disproved its own claims | `insufficient_evidence` | 7 | 7 | 10 | 10 | $0.0112 | live |
 
 6 runs, $0.0519 of model spend, 107 of 107 evidence records linked to the experiment that produced them.
-1,757 backend tests · 239 frontend tests.
+1,789 backend tests · 239 frontend tests.
 
 <!-- END GENERATED: published-runs -->
 
