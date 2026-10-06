@@ -40,6 +40,7 @@ from agentic.domain.common import DomainModel
 from agentic.evaluation.agency import AgencyCaseResult, AgencyReport, answer_is_scorable, score_answer
 from agentic.evaluation.cases import AGENCY_CASES, SUITE_ID, AgencyCase, CaseTier, cases_for_tier
 from agentic.evaluation.fixtures import build_fixture
+from agentic.evaluation.runner import SweepPoint
 from agentic.evaluation.scoreboard import RunMetrics
 
 #: Recorded with every C row, as the loop's prompt version is with every A/B row. Bump on any
@@ -178,3 +179,27 @@ def run_bare_suite(
     report = AgencyReport(suite_id=suite_id, total=len(results),
                           passed=sum(1 for r in results if r.passed), results=results)
     return report, metrics
+
+
+def run_bare_sweep(respond: Responder) -> list[SweepPoint]:
+    """
+    Condition C over the unscored signal sweep: whether the model alone claims a trend, per point.
+
+    The bare counterpart of :func:`agentic.evaluation.runner.run_signal_sweep`, producing the same
+    points so the curves can be read side by side.
+    """
+    from agentic.evaluation.generated import SIGNAL_SWEEP, parse_fixture_id, realised_t, series_values
+
+    points: list[SweepPoint] = []
+    for case in SIGNAL_SWEEP:
+        spec = parse_fixture_id(case.fixture_id)
+        result = run_bare_case(case, respond)
+        failure = result.observed_policy_failure
+        points.append(SweepPoint(
+            case_id=case.case_id, target_t=spec.target_t,
+            realised_t=round(realised_t(series_values(spec)), 4),
+            claimed="supported" in result.observed_hypothesis_statuses,
+            disposition=result.observed_disposition,
+            policy_failure=f"{failure.decision.value}:{failure.kind.value}" if failure else None,
+        ))
+    return points

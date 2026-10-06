@@ -291,10 +291,55 @@ responder, temperature 0 and `json_object` mode as the loop.
   own. That's why it lives in `backend/dev/`, is never persisted, and has its own prompt
   version (`BARE_PROMPT_VERSION`) recorded in the output JSON.
 
-### S5 — Runner and report
-`scoreboard.py` gains model × condition dimensions, the taxonomy, and bootstrap CIs. The full
-run is ~50 cases × 3 trials × 3 conditions × 3 sizes ≈ 1,350 runs, a few overnight runs
-locally, or Kaggle's free GPU running Ollama.
+### S5 — Runner and report · **landed 2026-10-05**
+The analysis is pure (`agentic/evaluation/study.py`); the runner is `backend/dev/study.py`.
+The full run is ~50 cases × 3 trials × 3 conditions × 3 sizes ≈ 1,350 runs, a few overnight
+runs locally, or Kaggle's free GPU running Ollama.
+
+```bash
+python -m backend.dev.study run --out data/evaluation/agency/study \
+    --model qwen3:1.7b=1.7 --model qwen3:8b=8 --condition A --condition B --condition C \
+    --tier core --tier hard --tier generated --trials 3 --max-elapsed-seconds 1800
+python -m backend.dev.study run --out ... --model fixture --condition A --condition B
+python -m backend.dev.study report data/evaluation/agency/study
+```
+
+- **Resumable.** Each model × condition cell is written to its own file the moment it
+  finishes (written whole, then renamed), and existing cells are skipped. An interrupted
+  overnight run resumes; adding a model re-runs nothing.
+- **Same guards as the bench.** Every cell goes through `run_policy_rows` via a hook that
+  hands over the raw per-case reports. So unpriced models, a provider that never answers,
+  the cost ceiling, and a model row that silently became the fixture are all still caught.
+- **The headline is the honest pass.** A run passes only if every answer property its case
+  asserts holds and no decision failed structurally (invalid JSON, schema, ungrounded).
+  Transport failures are excluded, not counted. This is the §5.7 rule. Measured through
+  the runner against a stub that never returns JSON: **raw 50% / honest 0%** on core under
+  the loop, and raw 63% / honest 0% on the generated tier.
+- **Failure taxonomy**, exactly one class per failing run, checked in order: transport,
+  structural, budget_exhaustion, overclaim, underclaim, reasoning.
+- **Intervals are a case bootstrap** (4,000 resamples, fixed seed), because at temperature
+  0 trials barely vary and the uncertainty is in which cases were chosen. A test checks
+  that adding trials of a deterministic case doesn't narrow the interval.
+- **Comparisons are paired.** Each condition is compared with A for the same model and
+  tier, resampling the same cases on both sides, and only over cases both scored. C skips
+  route-only cases, so A − C is computed on the cases they share.
+- Output: `study.md` (tables) and `study.json` (the cells, with size, rate and CI: the
+  headline figure's data).
+
+- **Signal-strength curve** (`run --sweep`). Runs the 36-point unscored sweep per model ×
+  condition (the loop via `run_signal_sweep`, C via `run_bare_sweep`). Sweeps are persisted
+  under `sweeps/` and resume like cells, with the same refusals. The report gives the claim
+  rate per target level and `t50`, the realised t where the claim rate first reaches 50%,
+  interpolated between levels. A curve that never crosses says so ("claims at every level" /
+  "never claims") rather than extrapolating. Failed calls are excluded, not counted as
+  declining. The `0` column is claims about pure noise.
+
+  Rule-based policy, measured. On this branch: noise claims **33%**, t50 **0.21**. With
+  #106's change-point fix merged: noise claims **0%**, t50 **2.12**, which sits just under the
+  ~2.23 a two-sided 5% slope test needs at n = 12. So the curve resolves the defect, and once
+  fixed, the scaffold's own evidence standard behaves like a textbook test.
+
+**Not yet:** the figure itself, which belongs with the write-up (S6).
 
 ### S6 — Write-up
 The extended scoreboard, the headline figure, a Substack post, and the README rebuilt around
