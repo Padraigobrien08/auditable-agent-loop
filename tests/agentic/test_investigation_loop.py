@@ -36,7 +36,10 @@ def _executed(inv) -> list[str]:
 
 
 def _trending_up(entity: str = "A", n: int = 8, start: float = 10.0, step: float = 5.0) -> pd.DataFrame:
-    periods = [f"2021-Q{i%4+1}-{i//4}" for i in range(n)]
+    # Labels must sort chronologically: the tools order periods by sorting them. The previous
+    # "2021-Q1-0 … 2021-Q1-1" form sorted to Q1-0, Q1-1, Q2-0, … and scrambled the series, which
+    # only went unnoticed because an uncalibrated change-point score stood in for the trend fit.
+    periods = [f"{2021 + i // 4}-Q{i % 4 + 1}" for i in range(n)]
     return pd.DataFrame({"entity": [entity] * n, "period": periods,
                          "revenue": [start + step * i for i in range(n)]})
 
