@@ -212,7 +212,7 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via
     #   -r requirements-backend.txt
     #   mcp
@@ -318,8 +318,9 @@ typing-inspection==0.4.2
     #   mcp
     #   pydantic
     #   pydantic-settings
-urllib3==2.7.0
+urllib3==2.8.0
     # via
+    #   -r requirements.txt
     #   botocore
     #   requests
     #   responses
