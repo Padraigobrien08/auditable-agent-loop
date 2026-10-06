@@ -14,6 +14,7 @@ Not yet wired into production orchestration.
 
 from __future__ import annotations
 
+from .ablations import LoopAblations
 from .budget import BudgetTracker, LoopBudget, SafetyLimits
 from .clock import Clock, ManualClock, MonotonicClock
 from .components import (
@@ -74,6 +75,7 @@ from .replay import (
 from .store import InMemoryInvestigationStore, InvestigationStore, NullInvestigationStore
 
 __all__ = [
+    "LoopAblations",
     "InvestigationLoop",
     "run_investigation",
     # policy

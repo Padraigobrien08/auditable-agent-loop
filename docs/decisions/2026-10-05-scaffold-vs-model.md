@@ -183,9 +183,42 @@ already saturate?
 ### S2 — Case generator
 Parameterised signal strength, paired twins, a new tier. Pilot results set the signal range.
 
-### S3 — Condition B flags
-Loop configuration with three independent switches, defaulting to today's behavior, plus a
-test that the defaults reproduce the frozen tiers byte for byte.
+**Must include rival-claim cases.** S3 found that no existing case poses alternatives
+("is it X, or Y?"), so ablating the mutual-exclusivity check changes nothing anywhere in the
+suite. The generator needs either-or goals where both claims can look supported, each with
+a twin where one claim is genuinely right.
+
+### S3 — Condition B flags · **landed 2026-10-05**
+`LoopAblations` (`agentic/agent/ablations.py`) has three switches, all on by default:
+`critic`, `typed_termination`, `mutual_exclusivity`. The bench takes `--ablate <name>`
+(repeatable), and the row label names what was removed (`fixture -critic`).
+
+- **"Termination off" means `NaiveTerminationPolicy`:** stop at the first claim that
+  clears the confidence bar. Budget, safety and user-stop limits are kept, because they
+  bound cost, not reasoning.
+- **Defaults reproduce the frozen suite exactly.** A test compares the full report with and
+  without explicit defaults.
+- **The switches are not independent.** Typed termination accepts a supported claim only
+  once it has been challenged or no intent tool is left. So *critic off* alone doesn't stop
+  sooner: the loop runs every remaining tool (2 → 3 on the concluding cases). Only
+  *termination off* stops sooner (2 → 1). Report single and combined ablations, and don't
+  read an ablation's effect as the component's effect in isolation.
+- **Rule-based policy under each ablation** (`fixture`, 1 trial):
+
+  | removed | core | hard | what changed |
+  |---|---|---|---|
+  | — | 100% | 0% | |
+  | critic | 93% | 0% | `supported_claim_is_challenged_before_concluding` fails |
+  | typed_termination | 93% | 0% | the same case, and `budget_is_respected` now stops on sufficiency before the budget |
+  | mutual_exclusivity | 100% | 0% | **nothing**: no case exercises it |
+  | all three | 93% | 0% | |
+
+  The rule-based policy almost never needs rescuing, so the scaffold barely registers
+  here. That's expected: the prediction (P4/P5) is that the scaffold's value shows up when
+  the policy errs, which is what small models will do.
+- **`challenges_before_concluding` fails by construction** under *critic off*, because it
+  asserts the scaffold's own behaviour. That's one more reason the cross-condition headline
+  is `right_disposition`, not the full pass rate.
 
 ### S4 — Condition C harness
 `backend/dev/`: fixture → prompt → JSON disposition → the same disposition scorer.

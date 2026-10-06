@@ -38,6 +38,7 @@ from agentic.domain.provenance import Provenance
 from agentic.experiments import ArtifactSink, ExperimentRegistry, build_default_registry
 from agentic.experiments.record import ExperimentExecutionRecord
 
+from .ablations import LoopAblations
 from .budget import BudgetTracker, LoopBudget, SafetyLimits
 from .clock import Clock, MonotonicClock
 from .components import (
@@ -53,6 +54,7 @@ from .components import (
     HypothesisUpdater,
     InvestigationPlanner,
     LockedArtifactSink,
+    NaiveTerminationPolicy,
     TerminationPolicy,
     enforce_mutual_exclusivity,
     is_edgar_manifest,
@@ -115,6 +117,9 @@ class InvestigationLoop:
     observer: AgentObserver = NULL_OBSERVER
     # Injected so elapsed-time budgets and component timings stay deterministic in tests.
     clock: Clock = field(default_factory=MonotonicClock)
+    # Scaffold components switched off for measurement. The default is the product; see
+    # `agentic/agent/ablations.py` for why nothing on a user's path sets anything else.
+    ablations: LoopAblations = field(default_factory=LoopAblations)
 
     def __post_init__(self) -> None:
         self._interpreter = GoalInterpreter(self.policy)
@@ -125,7 +130,8 @@ class InvestigationLoop:
         self._evidence = EvidenceUpdater()
         self._hypotheses = HypothesisUpdater()
         self._critic = Critic(self.policy)
-        self._termination = TerminationPolicy()
+        self._termination = (
+            TerminationPolicy() if self.ablations.typed_termination else NaiveTerminationPolicy())
         self._synth = ConclusionSynthesizer()
 
     # -- public API ----------------------------------------------------------
@@ -298,7 +304,8 @@ class InvestigationLoop:
                         # Rivals the goal named as alternatives are checked the moment their
                         # statuses change, not left for the critic. Both standing is a
                         # contradiction the run can prove without asking anyone.
-                        enforce_mutual_exclusivity(state, idgen)
+                        if self.ablations.mutual_exclusivity:
+                            enforce_mutual_exclusivity(state, idgen)
                         # And a conflict the evidence has since separated stops counting
                         # against the run, so a settled question can still conclude.
                         reconcile_contradictions(state)
@@ -308,7 +315,7 @@ class InvestigationLoop:
                     investigation_id=inv.id, tool_name=chosen.tool_name, status=record.status.value,
                     duration_seconds=execution_seconds, evidence_produced=evidence_produced))
 
-            if any_succeeded:
+            if any_succeeded and self.ablations.critic:
                 try:
                     with self._timed(inv.id, LoopComponent.critic, tracker):
                         self._critic.challenge(state, interpretation, manifest,

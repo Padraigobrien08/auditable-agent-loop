@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 import structlog
 
+from agentic.agent.ablations import LoopAblations
 from agentic.agent.budget import LoopBudget, SafetyLimits
 from agentic.agent.policy import AgentPolicy
 from agentic.domain import PolicyFailureKind
@@ -163,6 +164,7 @@ def run_policy_rows(
     max_cost_usd: float | None = None,
     budget_cost_usd: float | None = None,
     max_elapsed_seconds: float | None = None,
+    ablations: LoopAblations | None = None,
     allow_unpriced: bool = False,
     tiers: tuple[CaseTier | None, ...] = (CaseTier.core, CaseTier.hard),
     settings: Settings | None = None,
@@ -183,6 +185,9 @@ def run_policy_rows(
     ``max_elapsed_seconds`` overrides the per-investigation wall-clock budget. Hosted models
     never approach the default, but a model served on a laptop can, and the run would then be
     scored as ``budget_exhausted`` — a measurement of the hardware filed as one of the model.
+
+    ``ablations`` switches scaffold components off for every row (condition B). The row label
+    carries what was removed, so an ablated row can never be read as the full loop.
     """
     base = settings if settings is not None else get_settings()
     rows: list[PolicyScorecard] = []
@@ -192,7 +197,7 @@ def run_policy_rows(
             kind == MODEL and model
         ) else base
         policy = policy_factory(kind, row_settings)
-        label = _label(kind, model)
+        label = _label(kind, model) + (ablations.label if ablations is not None else "")
 
         if kind == MODEL and type(policy).__name__ == "FixtureAgentPolicy":
             # Reporting a fixture result under a model's name would silently corrupt the
@@ -223,7 +228,8 @@ def run_policy_rows(
                 observer = MetricsObserver()
                 reports.append(
                     run_agency_suite(
-                        policy=policy, observer=observer, budget=budget, tier=tier, safety=safety)
+                        policy=policy, observer=observer, budget=budget, tier=tier, safety=safety,
+                        ablations=ablations)
                 )
                 fresh = observer.drain()
                 metrics.extend(fresh)
@@ -295,7 +301,7 @@ def run_policy_rows(
 
 def _render_json(
     board: Scoreboard, *, trials: int, model: str | None, endpoint: str | None = None,
-    max_elapsed_seconds: float | None = None,
+    max_elapsed_seconds: float | None = None, ablated: list[str] | None = None,
 ) -> str:
     payload = {
         "suite_id": board.suite_id,
@@ -304,6 +310,7 @@ def _render_json(
         "model": model,
         "endpoint": endpoint,
         "max_elapsed_seconds": max_elapsed_seconds,
+        "ablated": ablated or [],
         "rows": [row.model_dump(mode="json") for row in board.rows],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
@@ -349,6 +356,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--ablate",
+        action="append",
+        choices=sorted(LoopAblations.model_fields),
+        default=[],
+        help=(
+            "Switch a scaffold component off for every row (repeatable). Measurement only: "
+            "the row label names what was removed."
+        ),
+    )
+    p.add_argument(
         "--tier",
         choices=[t.value for t in CaseTier] + ["all"],
         default="all",
@@ -383,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         max_cost_usd=args.max_cost_usd,
         budget_cost_usd=args.budget_cost_usd,
         max_elapsed_seconds=args.max_elapsed_seconds,
+        ablations=LoopAblations.without(*args.ablate) if args.ablate else None,
         allow_unpriced=args.allow_unpriced,
         tiers=(
             (CaseTier.core, CaseTier.hard) if args.tier == "all" else (CaseTier(args.tier),)
@@ -395,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
         board, trials=args.trials, model=args.model,
         endpoint=_endpoint(get_settings()) if MODEL in kinds else None,
         max_elapsed_seconds=args.max_elapsed_seconds,
+        ablated=sorted(args.ablate),
     )
 
     if args.format in ("md", "both"):
