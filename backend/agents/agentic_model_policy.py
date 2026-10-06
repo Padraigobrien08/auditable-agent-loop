@@ -25,6 +25,7 @@ from agentic.agent.policy import (
     AgentPolicy,
     ModelAgentPolicy,
     PolicyPrompts,
+    PolicyTransportError,
     Responder,
 )
 from backend.agents.prompt_registry import AGENTIC_POLICY_ROLES, load_registered_prompt
@@ -105,11 +106,13 @@ class CostTrackingResponder:
             else:
                 result = self._provider.complete(request)
         except ChatCompletionProviderError as exc:
-            # Boundary: a provider failure becomes malformed policy output, which the
-            # loop treats as a safe termination rather than an unhandled crash. The
-            # recorder has already left an ``error`` row, so the attempt is still audited.
+            # Boundary: a provider failure becomes a typed transport failure, which the loop
+            # treats as a safe termination rather than an unhandled crash. It used to return
+            # ``""`` and surface as malformed output — indistinguishable from a model that
+            # replied with nothing, which charged every outage to the model. The recorder has
+            # already left an ``error`` row, so the attempt is still audited.
             log.warning("agentic.policy.provider_error", error=str(exc))
-            return ""
+            raise PolicyTransportError(f"provider error: {exc}") from exc
         self._pending_cost_usd += estimate_cost_usd(
             self._prices,
             model=result.model or self._model,

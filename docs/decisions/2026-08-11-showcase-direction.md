@@ -2,9 +2,10 @@
 
 Date: 2026-08-11 · Status: **accepted**
 
-Supersedes the sequencing in [`.planning/ROADMAP.md`](../../.planning/ROADMAP.md) and
-[`.planning/AGENT-PLATFORM-ROADMAP.md`](../../.planning/AGENT-PLATFORM-ROADMAP.md). Those
-records stay for history; this file is the current plan.
+Supersedes the sequencing in `.planning/ROADMAP.md` and `.planning/AGENT-PLATFORM-ROADMAP.md`
+(local-only since 2026-10-05; they remain in git history). Its own sequencing is in turn
+superseded by [`2026-10-05-scaffold-vs-model.md`](./2026-10-05-scaffold-vs-model.md); the
+decisions below still hold.
 
 ---
 

@@ -32,11 +32,13 @@ import argparse
 import json
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import structlog
 
-from agentic.agent.budget import LoopBudget
+from agentic.agent.budget import LoopBudget, SafetyLimits
 from agentic.agent.policy import AgentPolicy
+from agentic.domain import PolicyFailureKind
 from agentic.evaluation.agency import AgencyReport
 from agentic.evaluation.cases import SUITE_ID, CaseTier
 from agentic.evaluation.runner import run_agency_suite
@@ -95,6 +97,64 @@ def _assert_priced(settings: Settings, model: str | None, label: str) -> None:
     )
 
 
+def _provider_never_answered(report: AgencyReport) -> str | None:
+    """
+    The first failure's detail when *every* run ended on a transport failure, else ``None``.
+
+    All of them, not some: one timeout among answered calls is a result to record, but a
+    provider that answered nothing is a config fault, and scoring it would publish a row
+    about the configuration under the model's name.
+    """
+    failures = [r.observed_policy_failure for r in report.results]
+    if not failures or any(f is None or f.kind is not PolicyFailureKind.transport for f in failures):
+        return None
+    first = failures[0]
+    return first.detail if first is not None else ""
+
+
+def _is_known_free(settings: Settings, model: str | None) -> bool:
+    """
+    True when the model is *priced* at zero, as a locally served open-weight model is.
+
+    Distinct from unpriced: an explicit ``0.0`` entry is a statement that the model costs
+    nothing, so ``$0.00`` observed spend is the expected reading rather than evidence that
+    the price key missed the id the provider billed against.
+    """
+    price = parse_model_prices(settings.llm_model_prices).get(model or "")
+    return price is not None and price.input_per_1m == 0.0 and price.output_per_1m == 0.0
+
+
+def _endpoint(settings: Settings) -> str:
+    """Host the model rows were served from, recorded so a local run is never read as a hosted one.
+
+    Host and port only: a proxy URL can carry credentials or tokens in its userinfo or path.
+    """
+    if not settings.openai_base_url:
+        return "api.openai.com"
+    parts = urlsplit(settings.openai_base_url)
+    return parts.hostname + (f":{parts.port}" if parts.port else "") if parts.hostname else "custom"
+
+
+def _budget(budget_cost_usd: float | None, max_elapsed_seconds: float | None) -> LoopBudget | None:
+    overrides: dict[str, float] = {}
+    if budget_cost_usd:
+        overrides["max_cost_usd"] = budget_cost_usd
+    if max_elapsed_seconds:
+        overrides["max_elapsed_seconds"] = max_elapsed_seconds
+    return LoopBudget.model_validate(overrides) if overrides else None
+
+
+def _safety(max_elapsed_seconds: float | None) -> SafetyLimits | None:
+    # The safety cap sits above the budget and would otherwise stop a long local run first,
+    # under a different reason. Raised only as far as the budget, never lowered.
+    if not max_elapsed_seconds:
+        return None
+    default = SafetyLimits()
+    if max_elapsed_seconds <= default.absolute_max_elapsed_seconds:
+        return None
+    return SafetyLimits(absolute_max_elapsed_seconds=max_elapsed_seconds)
+
+
 def run_policy_rows(
     kinds: list[str],
     *,
@@ -102,6 +162,7 @@ def run_policy_rows(
     trials: int = 3,
     max_cost_usd: float | None = None,
     budget_cost_usd: float | None = None,
+    max_elapsed_seconds: float | None = None,
     allow_unpriced: bool = False,
     tiers: tuple[CaseTier | None, ...] = (CaseTier.core, CaseTier.hard),
     settings: Settings | None = None,
@@ -118,6 +179,10 @@ def run_policy_rows(
     ``max_cost_usd``. That ceiling sits on top of the per-run ``LoopBudget.max_cost_usd``:
     the budget bounds one investigation, this bounds the whole benchmark. Spend accumulates
     across a policy's tiers, so one ceiling covers the whole policy.
+
+    ``max_elapsed_seconds`` overrides the per-investigation wall-clock budget. Hosted models
+    never approach the default, but a model served on a laptop can, and the run would then be
+    scored as ``budget_exhausted`` — a measurement of the hardware filed as one of the model.
     """
     base = settings if settings is not None else get_settings()
     rows: list[PolicyScorecard] = []
@@ -135,13 +200,16 @@ def run_policy_rows(
             log.error("agency_bench.no_provider", label=label)
             raise SystemExit(
                 f"--policy model requested for {label!r} but no LLM provider is configured; "
-                "set EDGAR_BACKEND_OPENAI_API_KEY (or OPENAI_API_KEY) or drop the model row."
+                "set EDGAR_BACKEND_LLM_PROVIDER=openai and EDGAR_BACKEND_OPENAI_API_KEY, "
+                "or drop the model row."
             )
 
         if kind == MODEL and not allow_unpriced:
             _assert_priced(row_settings, model, label)
 
-        budget = LoopBudget(max_cost_usd=budget_cost_usd) if budget_cost_usd else None
+        budget = _budget(budget_cost_usd, max_elapsed_seconds)
+        safety = _safety(max_elapsed_seconds)
+        free = kind == MODEL and _is_known_free(row_settings, model)
         # Spend accumulates across every tier this policy is measured on, so a two-tier run
         # is bounded by one ceiling rather than one per tier.
         policy_metrics: list[RunMetrics] = []
@@ -154,7 +222,8 @@ def run_policy_rows(
             for trial in range(trials):
                 observer = MetricsObserver()
                 reports.append(
-                    run_agency_suite(policy=policy, observer=observer, budget=budget, tier=tier)
+                    run_agency_suite(
+                        policy=policy, observer=observer, budget=budget, tier=tier, safety=safety)
                 )
                 fresh = observer.drain()
                 metrics.extend(fresh)
@@ -170,13 +239,28 @@ def run_policy_rows(
                     spent_usd=round(spent, 4),
                 )
 
+                # Checked before the price guard below, which reads $0.00 spend as a price-key
+                # mismatch. When the provider never answered, nothing was billed for a reason
+                # that has nothing to do with prices, and saying so sends the reader to the
+                # wrong config.
+                first_trial = tier is tiers[0] and trial == 0
+                unreachable = _provider_never_answered(reports[-1]) if kind == MODEL and first_trial else None
+                if unreachable is not None:
+                    log.error("agency_bench.provider_unreachable", label=label, detail=unreachable)
+                    raise SystemExit(
+                        f"every {label!r} run ended because the provider never answered "
+                        f"(first: {unreachable}).\n"
+                        "Check EDGAR_BACKEND_OPENAI_API_KEY, EDGAR_BACKEND_OPENAI_BASE_URL and "
+                        "that the model id exists for this provider."
+                    )
+
                 # The static check above prices the *configured* id, but the API bills against
                 # a resolved snapshot ("gpt-5.4-mini" -> "gpt-5.4-mini-2026-03-17") and the
                 # price lookup is an exact match. Only observed spend can catch that mismatch,
                 # so fail after one trial rather than completing a whole paid benchmark at $0.
                 calls = sum(m.model_calls for m in policy_metrics)
-                first_trial = tier is tiers[0] and trial == 0
-                if kind == MODEL and not allow_unpriced and first_trial and calls > 0 and spent == 0.0:
+                if (kind == MODEL and not allow_unpriced and not free and first_trial
+                        and calls > 0 and spent == 0.0):
                     log.error("agency_bench.unpriced_resolved_model", label=label, model_calls=calls)
                     raise SystemExit(
                         f"{label!r} made {calls} model calls that cost $0.00, so its price key "
@@ -209,12 +293,17 @@ def run_policy_rows(
     return rows
 
 
-def _render_json(board: Scoreboard, *, trials: int, model: str | None) -> str:
+def _render_json(
+    board: Scoreboard, *, trials: int, model: str | None, endpoint: str | None = None,
+    max_elapsed_seconds: float | None = None,
+) -> str:
     payload = {
         "suite_id": board.suite_id,
         "prompt_version": AGENTIC_PROMPT_VERSION,
         "requested_trials": trials,
         "model": model,
+        "endpoint": endpoint,
+        "max_elapsed_seconds": max_elapsed_seconds,
         "rows": [row.model_dump(mode="json") for row in board.rows],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
@@ -251,6 +340,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Per-investigation LoopBudget.max_cost_usd.",
     )
     p.add_argument(
+        "--max-elapsed-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Per-investigation wall-clock budget (default: LoopBudget's). Raise it for a model "
+            "served locally, so slow hardware is not scored as budget exhaustion."
+        ),
+    )
+    p.add_argument(
         "--tier",
         choices=[t.value for t in CaseTier] + ["all"],
         default="all",
@@ -284,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         trials=args.trials,
         max_cost_usd=args.max_cost_usd,
         budget_cost_usd=args.budget_cost_usd,
+        max_elapsed_seconds=args.max_elapsed_seconds,
         allow_unpriced=args.allow_unpriced,
         tiers=(
             (CaseTier.core, CaseTier.hard) if args.tier == "all" else (CaseTier(args.tier),)
@@ -292,7 +391,11 @@ def main(argv: list[str] | None = None) -> int:
     board = Scoreboard(suite_id=SUITE_ID, rows=rows)
 
     markdown = board.to_markdown()
-    payload = _render_json(board, trials=args.trials, model=args.model)
+    payload = _render_json(
+        board, trials=args.trials, model=args.model,
+        endpoint=_endpoint(get_settings()) if MODEL in kinds else None,
+        max_elapsed_seconds=args.max_elapsed_seconds,
+    )
 
     if args.format in ("md", "both"):
         print(markdown)

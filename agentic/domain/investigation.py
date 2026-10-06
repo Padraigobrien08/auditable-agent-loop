@@ -24,6 +24,8 @@ from .enums import (
     EvidenceDirection,
     ExperimentStatus,
     InvestigationStatus,
+    PolicyDecisionKind,
+    PolicyFailureKind,
     TerminationReason,
 )
 from .evidence import Evidence
@@ -80,6 +82,15 @@ class BudgetState(DomainModel):
         return any(cap is not None and used >= cap for cap, used in checks)
 
 
+class PolicyFailure(DomainModel):
+    """The policy decision that ended (or emptied) a run, and how it failed."""
+
+    decision: PolicyDecisionKind
+    kind: PolicyFailureKind
+    #: The validator's or provider's message, truncated. Diagnostic only; never scored.
+    detail: str = ""
+
+
 class TerminationDecision(DomainModel):
     """A recorded stop/continue decision — sufficient or insufficient are both valid."""
 
@@ -89,6 +100,11 @@ class TerminationDecision(DomainModel):
     at_iteration: int = Field(..., ge=0)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     provenance: Provenance | None = Field(default=None)
+    #: Set when a policy decision caused this stop. With ``reason=error`` it names the decision
+    #: that failed; with any other reason it records an ungrounded choice the loop absorbed,
+    #: which would otherwise read as an ordinary stop. Lives here rather than on the state so
+    #: it persists through ``termination_json`` with no new column.
+    policy_failure: PolicyFailure | None = None
     decided_at: datetime = Field(default_factory=utc_now)
     schema_version: str = Field(default=DOMAIN_SCHEMA_VERSION)
 

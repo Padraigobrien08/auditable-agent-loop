@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Run the agency suite against open-weight models served locally by Ollama.
+#
+# S1 of docs/decisions/2026-10-05-scaffold-vs-model.md: condition A (the full loop), every
+# tier, a small number of trials, to learn before building anything else whether structural
+# failures dominate and whether the largest size already saturates.
+#
+# Usage:
+#   scripts/agency-pilot-local                     # qwen3:1.7b and qwen3:8b, 1 trial
+#   scripts/agency-pilot-local qwen3:4b            # any models already pulled
+#   TRIALS=3 scripts/agency-pilot-local qwen3:1.7b qwen3:4b qwen3:8b
+#
+# Environment (all optional):
+#   OLLAMA_URL            default http://localhost:11434
+#   TRIALS                default 1
+#   MAX_ELAPSED_SECONDS   per-investigation wall-clock budget, default 1800
+#   REQUEST_TIMEOUT_S     per model call, default 600
+#   OUT_DIR               default data/evaluation/agency/pilot-<date>
+#   PYTHON                default python
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+TRIALS="${TRIALS:-1}"
+MAX_ELAPSED_SECONDS="${MAX_ELAPSED_SECONDS:-1800}"
+REQUEST_TIMEOUT_S="${REQUEST_TIMEOUT_S:-600}"
+OUT_DIR="${OUT_DIR:-data/evaluation/agency/pilot-$(date +%F)}"
+PYTHON="${PYTHON:-python}"
+
+if [ "$#" -gt 0 ]; then
+  MODELS=("$@")
+else
+  # Smallest and largest of one family. Size is the only thing that varies, so it is not
+  # confounded with training recipe.
+  MODELS=(qwen3:1.7b qwen3:8b)
+fi
+
+if ! curl -fsS "$OLLAMA_URL/api/tags" -o /dev/null; then
+  echo "Ollama is not answering at $OLLAMA_URL. Start it with 'ollama serve'." >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+
+# Pin what was measured. A tag like qwen3:4b moves when it is re-published; the digest does
+# not, so the digest is what makes a row reproducible. Fails here, before any run, if a
+# model has not been pulled.
+curl -fsS "$OLLAMA_URL/api/tags" | "$PYTHON" -c '
+import json, sys
+wanted = sys.argv[1:]
+tags = {m["name"]: m for m in json.load(sys.stdin).get("models", [])}
+missing = [m for m in wanted if m not in tags]
+if missing:
+    sys.exit("not pulled: " + ", ".join(missing) + "\nrun: " + " && ".join(f"ollama pull {m}" for m in missing))
+pinned = {m: {k: tags[m].get(k) for k in ("digest", "size", "details", "modified_at")} for m in wanted}
+print(json.dumps(pinned, indent=2, sort_keys=True))
+' "${MODELS[@]}" > "$OUT_DIR/models.json"
+
+# Every local model is priced at an explicit zero. That is a statement that it is free,
+# not a missing entry: the bench refuses unpriced models, but accepts $0.00 spend from a
+# model configured to cost nothing.
+PRICES="$("$PYTHON" -c '
+import json, sys
+print(json.dumps({m: {"input_per_1m": 0.0, "output_per_1m": 0.0} for m in sys.argv[1:]}))
+' "${MODELS[@]}")"
+
+# Settings validation runs before any work. None of these are used by the bench beyond
+# passing that validation, so throwaway values are correct here.
+export EDGAR_BACKEND_JWT_SECRET="${EDGAR_BACKEND_JWT_SECRET:-$("$PYTHON" -c 'import secrets; print(secrets.token_urlsafe(48))')}"
+export EDGAR_BACKEND_ALLOW_OPEN_REGISTRATION="${EDGAR_BACKEND_ALLOW_OPEN_REGISTRATION:-true}"
+export EDGAR_BACKEND_OPS_API_TOKEN="${EDGAR_BACKEND_OPS_API_TOKEN:-local-pilot}"
+export EDGAR_BACKEND_ALLOW_SQLITE="${EDGAR_BACKEND_ALLOW_SQLITE:-true}"
+export EDGAR_BACKEND_DATABASE_URL="${EDGAR_BACKEND_DATABASE_URL:-sqlite:///$OUT_DIR/unused.db}"
+
+# Ollama's OpenAI-compatible endpoint. It ignores the key, but the provider requires one.
+export EDGAR_BACKEND_LLM_PROVIDER=openai
+export EDGAR_BACKEND_OPENAI_API_KEY=ollama
+export EDGAR_BACKEND_OPENAI_BASE_URL="$OLLAMA_URL/v1"
+export EDGAR_BACKEND_OPENAI_TIMEOUT_S="$REQUEST_TIMEOUT_S"
+export EDGAR_BACKEND_LLM_MODEL_PRICES="$PRICES"
+
+for model in "${MODELS[@]}"; do
+  stem="$OUT_DIR/${model//[:\/]/_}"
+  echo "== $model -> $stem.{md,json}" >&2
+  "$PYTHON" -m backend.dev.agency_bench \
+    --policy model --model "$model" \
+    --trials "$TRIALS" \
+    --max-elapsed-seconds "$MAX_ELAPSED_SECONDS" \
+    --format both --out "$stem"
+done
+
+echo "Done. Results and pinned digests in $OUT_DIR" >&2

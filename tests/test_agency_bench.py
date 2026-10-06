@@ -352,3 +352,101 @@ def test_cli_defaults_to_the_fixture_row(capsys) -> None:
 def test_cli_rejects_a_zero_trial_run() -> None:
     with pytest.raises(SystemExit, match="--trials must be at least 1"):
         main(["--policy", "fixture", "--trials", "0"])
+
+
+# -- local models --------------------------------------------------------------
+
+
+def test_a_model_priced_at_zero_is_not_mistaken_for_a_snapshot_mismatch() -> None:
+    """
+    A locally served model costs nothing, and saying so with an explicit zero price is a
+    statement, not a missing entry. ``$0.00`` observed spend is then the expected reading;
+    the snapshot guard must not abort the run over it.
+    """
+    free = Settings(
+        agent_completion_model="test-model",
+        llm_model_prices={"qwen3:4b": {"input_per_1m": 0.0, "output_per_1m": 0.0}},
+    )
+
+    rows = run_policy_rows(
+        ["model"],
+        model="qwen3:4b",
+        trials=2,
+        settings=free,
+        policy_factory=lambda kind, s: _CostlyPolicy(cost_per_call=0.0),
+    )
+
+    assert [r.trials for r in rows] == [2, 2]
+    assert all(r.total_cost_usd == 0.0 for r in rows)
+
+
+def test_max_elapsed_seconds_reaches_every_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slow local hardware must not be scored as the model exhausting its budget."""
+    import backend.dev.agency_bench as bench
+
+    seen: list[tuple[object, object]] = []
+    real = bench.run_agency_suite
+
+    def spy(**kwargs):  # noqa: ANN003 - pass-through test double
+        seen.append((kwargs["budget"], kwargs["safety"]))
+        return real(**kwargs)
+
+    monkeypatch.setattr(bench, "run_agency_suite", spy)
+    run_policy_rows(
+        ["fixture"], trials=1, max_elapsed_seconds=1800.0,
+        settings=_settings(), policy_factory=_fixture_factory,
+    )
+
+    assert seen
+    for budget, safety in seen:
+        assert budget.max_elapsed_seconds == 1800.0
+        # The hard cap sits above the budget; left at its default it would stop the run
+        # first, under a different reason.
+        assert safety.absolute_max_elapsed_seconds == 1800.0
+
+
+def test_safety_cap_is_raised_never_lowered() -> None:
+    from agentic.agent.budget import SafetyLimits
+    from backend.dev.agency_bench import _safety
+
+    assert _safety(None) is None
+    assert _safety(SafetyLimits().absolute_max_elapsed_seconds / 2) is None
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        (None, "api.openai.com"),
+        ("http://localhost:11434/v1", "localhost:11434"),
+        # Credentials and tokens in a proxy URL never reach a published scoreboard.
+        ("https://user:secret@proxy.example:8443/v1?token=abc", "proxy.example:8443"),
+    ],
+)
+def test_endpoint_records_host_only(base_url: str | None, expected: str) -> None:
+    from backend.dev.agency_bench import _endpoint
+
+    assert _endpoint(Settings(openai_base_url=base_url)) == expected
+
+
+class _UnreachablePolicy(FixtureAgentPolicy):
+    def interpret_goal(self, goal_text: str, *, capability_summary: dict) -> GoalInterpretation:
+        from agentic.agent.policy import PolicyTransportError
+
+        raise PolicyTransportError("provider error: 401 invalid api key")
+
+
+def test_a_provider_that_never_answers_is_reported_as_such() -> None:
+    """
+    No completion means no spend, which the price guard would read as a price-key mismatch
+    and send the reader to the wrong config. A bad key must be named as what it is.
+    """
+    priced = Settings(
+        agent_completion_model="test-model",
+        llm_model_prices={"priced-model": {"input_per_1m": 0.15, "output_per_1m": 0.60}},
+    )
+
+    with pytest.raises(SystemExit, match="provider never answered.*401 invalid api key"):
+        run_policy_rows(
+            ["model"], model="priced-model", trials=3, settings=priced,
+            policy_factory=lambda kind, s: _UnreachablePolicy(),
+        )

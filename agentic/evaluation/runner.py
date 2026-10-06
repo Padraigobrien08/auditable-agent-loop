@@ -83,6 +83,7 @@ def run_agency_suite(
     observer: AgentObserver | None = None,
     budget: LoopBudget | None = None,
     tier: CaseTier | None = None,
+    safety: SafetyLimits | None = None,
 ) -> AgencyReport:
     """Run every case and aggregate a report.
 
@@ -96,7 +97,9 @@ def run_agency_suite(
     """
     if tier is not None:
         cases = cases_for_tier(tier, cases)
-    results = [run_case(case, policy=policy, observer=observer, budget=budget) for case in cases]
+    results = [
+        run_case(case, policy=policy, observer=observer, budget=budget, safety=safety) for case in cases
+    ]
     return AgencyReport(
         suite_id=suite_id,
         total=len(results),

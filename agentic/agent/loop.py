@@ -28,6 +28,8 @@ from agentic.domain import (
     InvestigationState,
     InvestigationStatus,
     OpenQuestion,
+    PolicyDecisionKind,
+    PolicyFailure,
     TerminationReason,
 )
 from agentic.domain.enums import ProvenanceSource
@@ -199,8 +201,9 @@ class InvestigationLoop:
         try:
             with self._timed(inv.id, LoopComponent.goal_interpreter, tracker):
                 interpretation = self._interpreter.interpret(goal_text, manifest, tracker)
-        except AgentPolicyError:
-            return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at)
+        except AgentPolicyError as exc:
+            return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at,
+                                   failure=_policy_failure(PolicyDecisionKind.interpret_goal, exc))
 
         # A premise the data cannot support ends the run here, before a claim is proposed or a
         # tool is chosen. Continuing would mean investigating a substitute: the loop picks the
@@ -216,8 +219,9 @@ class InvestigationLoop:
             try:
                 with self._timed(inv.id, LoopComponent.hypothesis_generator, tracker):
                     self._generator.generate(interpretation, state, manifest, idgen, tracker)
-            except AgentPolicyError:
-                return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at)
+            except AgentPolicyError as exc:
+                return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at,
+                                       failure=_policy_failure(PolicyDecisionKind.generate_hypotheses, exc))
             inv.set_status(InvestigationStatus.planning)
             inv.set_status(InvestigationStatus.running)
             store.save(inv)
@@ -256,12 +260,17 @@ class InvestigationLoop:
                 with self._timed(inv.id, LoopComponent.selector, tracker):
                     batch = self._selector.select_batch(
                         state, candidates, interpretation, tracker, idgen, limit=batch_limit)
-            except AgentPolicyError:
-                return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at)
+            except AgentPolicyError as exc:
+                # The planner is pure, so a policy error here can only be the selector's.
+                return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at,
+                                       failure=_policy_failure(PolicyDecisionKind.select_experiment, exc))
 
             if not batch:
                 reason = self._termination.finalize_no_candidates(state, ran_any=tracker.experiments_used > 0)
-                return self._finalize(inv, state, idgen, store, reason, tracker, started_at)
+                # Behavior is unchanged when the selector named a candidate that does not exist —
+                # the run stops as if it had declined — but the record says which it was.
+                return self._finalize(inv, state, idgen, store, reason, tracker, started_at,
+                                      failure=self._selector.last_fault)
 
             with self._timed(inv.id, LoopComponent.executor):
                 outcomes = self._run_batch(batch, manifest, frame)
@@ -305,8 +314,9 @@ class InvestigationLoop:
                         self._critic.challenge(state, interpretation, manifest,
                                                executed_tools | {b.tool_name for b in batch},
                                                tracker, idgen)
-                except AgentPolicyError:
-                    return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at)
+                except AgentPolicyError as exc:
+                    return self._fail_safe(inv, state, idgen, store, TerminationReason.error, tracker, started_at,
+                                           failure=_policy_failure(PolicyDecisionKind.critique, exc))
 
             state.advance_iteration()
             store.save(inv)
@@ -437,13 +447,14 @@ class InvestigationLoop:
 
     def _finalize(self, inv: Investigation, state: InvestigationState, idgen: DeterministicIds,
                   store: InvestigationStore, reason: TerminationReason,
-                  tracker: BudgetTracker, started_at: float) -> Investigation:
+                  tracker: BudgetTracker, started_at: float, *,
+                  failure: PolicyFailure | None = None) -> Investigation:
         with self._timed(inv.id, LoopComponent.conclusion_synthesizer):
             self._synth.synthesize(
                 state, reason, idgen,
                 policy=self.policy, question=state.objective.objective, tracker=tracker,
             )
-        state.record_termination(make_termination(reason, state, idgen))
+        state.record_termination(make_termination(reason, state, idgen, policy_failure=failure))
         inv.set_status(_TERMINAL_STATUS.get(reason, InvestigationStatus.exhausted))
         store.save(inv)
         self.observer.on_termination(TerminationObserved(
@@ -487,7 +498,8 @@ class InvestigationLoop:
 
     def _fail_safe(self, inv: Investigation, state: InvestigationState, idgen: DeterministicIds,
                    store: InvestigationStore, reason: TerminationReason,
-                   tracker: BudgetTracker, started_at: float) -> Investigation:
+                   tracker: BudgetTracker, started_at: float, *,
+                   failure: PolicyFailure | None = None) -> Investigation:
         """Malformed model output / internal error -> terminate safely with a conclusion."""
         if state.termination is None:
             with self._timed(inv.id, LoopComponent.conclusion_synthesizer):
@@ -495,7 +507,7 @@ class InvestigationLoop:
                     state, reason, idgen,
                     policy=self.policy, question=state.objective.objective, tracker=tracker,
                 )
-            state.record_termination(make_termination(reason, state, idgen))
+            state.record_termination(make_termination(reason, state, idgen, policy_failure=failure))
         if inv.status not in (InvestigationStatus.converged, InvestigationStatus.exhausted, InvestigationStatus.failed):
             # created -> planning -> running -> failed (respect the transition graph)
             if inv.status is InvestigationStatus.created:
@@ -508,6 +520,15 @@ class InvestigationLoop:
             investigation_id=inv.id, reason=reason, iterations=state.budget.iterations_used))
         self._emit_end(inv, state, tracker, started_at)
         return inv
+
+
+#: Enough of a validator message to say which field failed, short enough that a model echoing
+#: a long payload back cannot bloat the persisted termination.
+_FAILURE_DETAIL_LIMIT = 500
+
+
+def _policy_failure(decision: PolicyDecisionKind, exc: AgentPolicyError) -> PolicyFailure:
+    return PolicyFailure(decision=decision, kind=exc.kind, detail=str(exc)[:_FAILURE_DETAIL_LIMIT])
 
 
 def run_investigation(goal_text: str, *, manifest: DatasetManifest, frame: pd.DataFrame | None = None, **kwargs) -> Investigation:

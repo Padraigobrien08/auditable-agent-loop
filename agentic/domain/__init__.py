@@ -36,6 +36,8 @@ from .enums import (
     ObservationType,
     OpenQuestionStatus,
     PayloadKind,
+    PolicyDecisionKind,
+    PolicyFailureKind,
     ProvenanceSource,
     QualitySeverity,
     ReferenceKind,
@@ -59,6 +61,7 @@ from .investigation import (
     Investigation,
     InvestigationGoal,
     InvestigationState,
+    PolicyFailure,
     TerminationDecision,
 )
 from .manifest import (
@@ -117,6 +120,8 @@ __all__ = [
     "QualitySeverity",
     "ReferenceKind",
     "SemanticType",
+    "PolicyDecisionKind",
+    "PolicyFailureKind",
     "TerminationReason",
     # dataset profiles
     "SourceIdentity",
@@ -167,6 +172,7 @@ __all__ = [
     "InvestigationGoal",
     "InvestigationState",
     "BudgetState",
+    "PolicyFailure",
     "TerminationDecision",
     "IllegalInvestigationTransition",
 ]

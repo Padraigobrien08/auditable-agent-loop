@@ -265,3 +265,30 @@ def test_an_untiered_board_omits_the_tier_column() -> None:
 
 def test_empty_scoreboard_renders_without_raising() -> None:
     assert "No results" in Scoreboard(suite_id="suite_agency_v1").to_markdown()
+
+
+def test_policy_failures_are_counted_by_decision_and_kind() -> None:
+    """A failing row must say whether the model reasoned badly or never produced valid output."""
+    from agentic.domain import PolicyDecisionKind, PolicyFailure, PolicyFailureKind
+
+    def failed(case_id: str, decision: PolicyDecisionKind, kind: PolicyFailureKind) -> AgencyCaseResult:
+        return _result(case_id, False).model_copy(
+            update={"observed_policy_failure": PolicyFailure(decision=decision, kind=kind)})
+
+    critique_schema = (PolicyDecisionKind.critique, PolicyFailureKind.schema)
+    row = aggregate_trials("small-model", [
+        _report(failed("a", *critique_schema), _result("b", True)),
+        _report(failed("a", *critique_schema),
+                failed("b", PolicyDecisionKind.interpret_goal, PolicyFailureKind.transport)),
+    ])
+
+    assert row.policy_failures == {"critique:schema": 2, "interpret_goal:transport": 1}
+    markdown = Scoreboard(suite_id="s", rows=[row]).to_markdown()
+    assert "`critique:schema` × 2" in markdown
+
+
+def test_a_clean_row_reports_no_failure_section() -> None:
+    row = aggregate_trials("fixture", [_report(_result("a", True))])
+
+    assert row.policy_failures == {}
+    assert "Policy failures" not in Scoreboard(suite_id="s", rows=[row]).to_markdown()
