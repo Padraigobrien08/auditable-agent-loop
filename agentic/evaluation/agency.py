@@ -39,7 +39,14 @@ class AgencyProperty(str, Enum):
     """Concludes supported / refuted / insufficient in line with the data."""
 
     revises_under_contradiction = "revises_under_contradiction"
-    """A hypothesis the evidence opposes does not end up supported."""
+    """A hypothesis the evidence opposes does not end up supported.
+
+    Includes a rival the goal itself opposes: asked *which* of two explanations holds, a run
+    that ends with both supported has kept a claim the question rules out. Each can be scored
+    honestly against its own evidence and still stand beside the other (the same trend fit
+    backs "rising steadily" and "a one-off jump" on a step series), so only a check across
+    claims catches it.
+    """
 
     preserves_contradicting_evidence = "preserves_contradicting_evidence"
     """Opposing evidence is retained, not discarded in favour of a tidy story."""
@@ -102,6 +109,9 @@ class AgencyExpectations(DomainModel):
     max_experiments: int | None = None
     max_confidence: float | None = None
     min_confidence: float | None = None
+    #: At most this many hypotheses may end ``supported``. Set to 1 on a goal that poses two
+    #: rival explanations, where affirming both is a failure to answer the question asked.
+    max_supported_claims: int | None = None
 
 
 class PropertyOutcome(DomainModel):
@@ -396,6 +406,16 @@ def score_case(
             AgencyProperty.calibrated_confidence,
             confidence <= expectations.max_confidence,
             f"confidence {confidence:.2f} exceeds {expectations.max_confidence:.2f} for this evidence",
+            outcomes,
+        )
+
+    if expectations.max_supported_claims is not None:
+        supported = statuses.count("supported")
+        _check(
+            AgencyProperty.revises_under_contradiction,
+            supported <= expectations.max_supported_claims,
+            f"{supported} claims ended supported; the goal asked which of rival explanations "
+            f"holds, so at most {expectations.max_supported_claims} may",
             outcomes,
         )
 

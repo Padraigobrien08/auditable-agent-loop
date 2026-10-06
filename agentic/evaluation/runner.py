@@ -15,6 +15,7 @@ from agentic.agent.budget import LoopBudget, SafetyLimits
 from agentic.agent.loop import InvestigationLoop
 from agentic.agent.observer import AgentObserver
 from agentic.agent.policy import AgentPolicy
+from agentic.domain.common import DomainModel
 from agentic.domain.enums import ColumnRole
 from agentic.evaluation.agency import AgencyCaseResult, AgencyReport, score_case
 from agentic.evaluation.cases import AGENCY_CASES, SUITE_ID, AgencyCase, CaseTier, cases_for_tier
@@ -82,7 +83,7 @@ def run_case(
 def run_agency_suite(
     *,
     policy: AgentPolicy | None = None,
-    cases: tuple[AgencyCase, ...] = AGENCY_CASES,
+    cases: tuple[AgencyCase, ...] | None = None,
     suite_id: str = SUITE_ID,
     observer: AgentObserver | None = None,
     budget: LoopBudget | None = None,
@@ -100,6 +101,15 @@ def run_agency_suite(
     saturated by design history, the hard tier is where the headroom is — so a caller
     comparing policies should report them separately rather than averaging them.
     """
+    if cases is None:
+        if tier is CaseTier.generated:
+            from agentic.evaluation.generated import GENERATED_CASES, GENERATED_SUITE_ID
+
+            cases = GENERATED_CASES
+            if suite_id == SUITE_ID:
+                suite_id = GENERATED_SUITE_ID
+        else:
+            cases = AGENCY_CASES
     if tier is not None:
         cases = cases_for_tier(tier, cases)
     results = [
@@ -112,6 +122,55 @@ def run_agency_suite(
         passed=sum(1 for r in results if r.passed),
         results=results,
     )
+
+
+class SweepPoint(DomainModel):
+    """One point on the signal-strength curve: how strong the signal was, and what the run did."""
+
+    case_id: str
+    target_t: float
+    #: The series' OLS slope t-statistic, computed independently of the experiment tools. The
+    #: curve is read against this, not the target, because the realised value scatters.
+    realised_t: float
+    #: Whether any claim ended ``supported``.
+    claimed: bool
+    disposition: str | None = None
+    termination: str | None = None
+    policy_failure: str | None = None
+
+
+def run_signal_sweep(
+    *,
+    policy: AgentPolicy | None = None,
+    observer: AgentObserver | None = None,
+    budget: LoopBudget | None = None,
+    safety: SafetyLimits | None = None,
+    ablations: LoopAblations | None = None,
+) -> list[SweepPoint]:
+    """
+    Run the unscored sweep and report, per point, whether a trend was claimed.
+
+    Deliberately not a pass rate: between the clear and null bands the right answer depends on
+    the evidence standard, so there is nothing to pass. The result is a curve, the realised t
+    at which a configuration starts claiming a trend, and it is read against the full loop's
+    curve rather than against an answer key.
+    """
+    from agentic.evaluation.generated import SIGNAL_SWEEP, parse_fixture_id, realised_t, series_values
+
+    points: list[SweepPoint] = []
+    for case in SIGNAL_SWEEP:
+        spec = parse_fixture_id(case.fixture_id)
+        result = run_case(case, policy=policy, observer=observer, budget=budget, safety=safety,
+                          ablations=ablations)
+        failure = result.observed_policy_failure
+        points.append(SweepPoint(
+            case_id=case.case_id, target_t=spec.target_t,
+            realised_t=round(realised_t(series_values(spec)), 4),
+            claimed="supported" in result.observed_hypothesis_statuses,
+            disposition=result.observed_disposition, termination=result.observed_termination,
+            policy_failure=f"{failure.decision.value}:{failure.kind.value}" if failure else None,
+        ))
+    return points
 
 
 def format_report(report: AgencyReport) -> str:

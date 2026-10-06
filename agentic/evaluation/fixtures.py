@@ -243,6 +243,12 @@ FIXTURES: dict[str, Callable[[], pd.DataFrame]] = {
 
 
 def build_fixture(fixture_id: str) -> pd.DataFrame:
+    if fixture_id.startswith("gen:"):
+        # Imported here: the generated module builds its cases at import, and a fixture id is
+        # the only thing a generated case needs from this one.
+        from agentic.evaluation.generated import build_generated_fixture
+
+        return build_generated_fixture(fixture_id)
     try:
         return FIXTURES[fixture_id]()
     except KeyError as exc:  # pragma: no cover - guard
