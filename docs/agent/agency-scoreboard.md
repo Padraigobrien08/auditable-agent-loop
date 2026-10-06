@@ -2,6 +2,15 @@
 
 **Measured:** 2026-08-26 · **Prompts:** `1.0.6` · **Model snapshot:** `gpt-5.4-mini` · **Trials:** 5 per policy per tier
 
+> **Measured before `detect_change_points` 1.1** (2026-10-05). That version added a
+> permutation test for the change-point score, and the evidence updater stopped turning a
+> tool's "not significant" verdict into support or refutation by the sign of the shift.
+> Before it, pure noise often produced a strength-1.0 shift, and the loop could support,
+> or refute, a directional trend on data with no trend. The `fixture` rows are unaffected:
+> same pass rates, and the one changed route (`noise_is_not_a_trend` now concludes
+> `insufficient_evidence` rather than `refuted`) still passes. The `gpt-5.4-mini` rows
+> have not been re-measured since.
+
 > **The hard tier is saturated.** `gpt-5.4-mini` now passes 5 of 5, so this tier no longer has
 > headroom: it still separates a rule engine from a model — the baseline scores 0% — but it
 > cannot rank two competent agents, which is the job it was built for. That is the same

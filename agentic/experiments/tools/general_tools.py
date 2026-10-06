@@ -663,13 +663,18 @@ class _ChangeParams(DomainModel):
     min_segment: int = Field(default=2, ge=1)
 
 
+#: Significance level for a change point. The test is of the *maximum* shift, so this is the
+#: false-positive rate of the whole search, not of one split.
+_CHANGE_POINT_ALPHA = 0.05
+
+
 class DetectChangePointsTool(BaseExperimentTool):
     params_model = _ChangeParams
 
     def descriptor(self) -> ExperimentToolDescriptor:
         return ExperimentToolDescriptor(
             name="detect_change_points",
-            version="1.0",
+            version="1.1",
             purpose="Detect the single most significant mean shift via one-split binary segmentation.",
             supported_input_modalities=[Modality.time_series, Modality.tabular],
             required_capabilities=ExperimentCapability(
@@ -698,24 +703,34 @@ class DetectChangePointsTool(BaseExperimentTool):
         y = pd.to_numeric(sub[params.value_column], errors="coerce").to_numpy(dtype=float)
         y = y[np.isfinite(y)]
         n = y.size
-        if n < 2 * params.min_segment:
-            raise ParameterError(f"need >= {2 * params.min_segment} points; have {n}")
-        best_split, best_score, best_shift = None, -1.0, 0.0
-        for k in range(params.min_segment, n - params.min_segment + 1):
-            left, right = y[:k], y[k:]
-            pooled = np.sqrt((np.var(left) * left.size + np.var(right) * right.size) / n) or 1.0
-            shift = (np.mean(right) - np.mean(left))
-            score = abs(shift) / pooled
-            if score > best_score:
-                best_split, best_score, best_shift = k, float(score), float(shift)
+        min_segment = params.min_segment
+        if n < 2 * min_segment:
+            raise ParameterError(f"need >= {2 * min_segment} points; have {n}")
+        best = st.max_mean_shift(y, min_segment)
+        best_split, best_score, best_shift = int(best["split"]), best["score"], best["shift"]
+        # The score is the largest of every split's standardised shift, so a large value is
+        # what noise produces too. Version 1.0 treated it as a pre-chosen Cohen's d, and pure
+        # noise reached evidence strength 1.0 often enough that the loop supported directional
+        # trends at 0.95 on series whose trend fit explained 1% of the variance. Only a shift
+        # the permutation test cannot attribute to the search counts as evidence.
+        p_value = st.max_mean_shift_p_value(y, min_segment)
+        significant = p_value < _CHANGE_POINT_ALPHA and best_score >= 0.5
         periods = sub[time_col].to_numpy()
         cp_period = str(periods[best_split]) if best_split is not None and best_split < len(periods) else None
+        warnings = []
+        if best_score < 0.5:
+            warnings.append("Weak shift (score < 0.5).")
+        if p_value >= _CHANGE_POINT_ALPHA:
+            warnings.append(f"Not significant: noise produces a shift this large (permutation p={p_value:.3f}).")
         stat = make_statistics(
             sample_size=int(n), effect_size=round(best_score, 6), effect_size_kind="cohens_d",
+            p_value=round(p_value, 6),
             coverage=round(nonnull_coverage(frame, params.value_column), 6),
             diagnostics={"shift": round(best_shift, 6), "split_index": float(best_split or 0)},
-            assumptions=["Single change point; standardized mean-shift score."],
-            warnings=["Weak shift (score < 0.5)."] if best_score < 0.5 else [],
+            assumptions=["Single change point; standardized mean-shift score.",
+                         "Score is the maximum over all splits; p-value from a permutation test "
+                         "of that maximum (exchangeable null, fixed seed)."],
+            warnings=warnings,
         )
         chart = context.artifact_sink.emit_chart("change_point", {
             "chart_type": "line", "value": params.value_column, "time": time_col,
@@ -726,7 +741,7 @@ class DetectChangePointsTool(BaseExperimentTool):
                                metric_ref=params.value_column, magnitude=best_shift)
         ev = make_evidence(evidence_type=EvidenceType.trend_break,
                            claim=f"'{params.value_column}' shifts by {best_shift:.3g} around {cp_period}.",
-                           direction=EvidenceDirection.supports if best_score >= 0.5 else EvidenceDirection.neutral,
+                           direction=EvidenceDirection.supports if significant else EvidenceDirection.neutral,
                            provenance=prov, statistics=stat,
                            source_reference=source_ref(context.manifest, column=params.value_column),
                            artifact_ids=[chart.id])
