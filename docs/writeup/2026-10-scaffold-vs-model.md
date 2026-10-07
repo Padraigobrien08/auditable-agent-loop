@@ -34,8 +34,16 @@ This study varies both:
 
 ## Predictions
 
-Written before the pilot, and not edited afterwards. See §3 of the decision doc. *[Fill in
-before running. Leave misses in place and discuss them below.]*
+Recorded on 2026-10-06, before the pilot, and not edited afterwards. The table, with bands and
+confidence, is §3 of the decision doc. In short:
+- the scaffold lifts Qwen3 1.7B well above the bare model (+20pp), but not to the 8B's level
+  (30% vs 70% honest pass);
+- most of the 1.7B's failures are structural;
+- the scaffold's margin over the bare model nearly vanishes by 8B (+5pp);
+- the bare 1.7B starts claiming trends at much weaker signal than the full loop (t₅₀ 0.8 vs
+  1.5).
+
+Misses are reported next to the results, not removed.
 
 ## How it's scored
 

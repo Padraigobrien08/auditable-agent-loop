@@ -43,15 +43,35 @@ Each of these outcomes is reportable:
 Fill these in **before the pilot** (S1). They are not edited afterwards. Misses get reported
 next to the results, as the README already does for the lr-3e-3 prediction.
 
+Recorded 2026-10-06, before any small-model run. Each row names the number in `study.md` it is
+scored against. Confidence is the probability that the measured value falls inside the band.
+
 | # | Prediction | Value | Confidence |
 |---|---|---|---|
-| P1 | Smallest size, condition A, `right_disposition` on hard tier | | |
-| P2 | Largest size, condition A, `right_disposition` on hard tier | | |
-| P3 | Share of smallest-size failures that are *structural* | | |
-| P4 | A − C gap at smallest size (pp) | | |
-| P5 | A − C gap at largest size (pp) | | |
-| P6 | Of critic / termination / mutual-exclusivity, which ablation costs most | | |
-| P7 | Signal level at which the smallest model starts claiming a trend in noise | | |
+| P1 | Qwen3 1.7B, condition A, honest pass, generated tier | 30% (band ±15pp) | 60% |
+| P2 | Qwen3 8B, condition A, honest pass, generated tier | 70% (band ±15pp) | 60% |
+| P3 | Share of Qwen3 1.7B condition-A failures classed *structural* | 60% (band ±20pp) | 60% |
+| P4 | A − C at Qwen3 1.7B, generated tier | +20pp (band ±15pp) | 55% |
+| P5 | A − C at Qwen3 8B, generated tier | +5pp (band ±10pp) | 55% |
+| P6 | At Qwen3 8B, the single ablation with the largest A − B drop | typed termination | 50% |
+| P7 | Qwen3 1.7B, condition A, sweep t₅₀ | 1.5 (band ±0.5) | 50% |
+| P8 | Qwen3 1.7B, condition C, sweep t₅₀ | 0.8 (band ±0.5) | 50% |
+
+**How the rows changed before recording.** The first draft of this table predated S5. It scored
+P1–P2 on `right_disposition` over the hard tier, which has 5 cases, so the 95% interval would
+have been about ±40pp. It also named no tier for P4–P5, no size for P6, and no measure for P7.
+The rows now use the honest pass on the generated tier (30 scored cases), and t₅₀ from the
+signal sweep. P8 was added because condition C has no deterministic floor on t₅₀, so it is
+where model overclaiming would show.
+
+Reference points known when these were written:
+- a model that never returns valid JSON scores 0% honest pass;
+- `gpt-5.4-mini` scored 100% on core and hard at prompts 1.0.6, but was never run on the
+  generated tier;
+- the rule-based policy's t₅₀ is 2.12 after #106, against t ≈ 2.23 for a two-sided 5% slope
+  test at 12 points.
+
+The values were proposed in a Claude Code session and adopted by the author unchanged.
 
 ## 4. Design
 
